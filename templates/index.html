@@ -229,6 +229,159 @@
         .typing-indicator.show {
             display: block;
         }
+
+        /* 命令确认对话框样式 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-dialog {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .modal-header.danger {
+            background: #fff5f5;
+        }
+
+        .modal-header.warning {
+            background: #fffbeb;
+        }
+
+        .modal-icon {
+            font-size: 24px;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .command-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .command-info-row {
+            display: flex;
+            margin-bottom: 12px;
+        }
+
+        .command-info-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .command-info-label {
+            font-weight: 600;
+            color: #666;
+            min-width: 80px;
+        }
+
+        .command-info-value {
+            color: #333;
+            flex: 1;
+        }
+
+        .command-box {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            margin-top: 8px;
+        }
+
+        .danger-warning {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            padding: 12px;
+            color: #dc2626;
+            margin-bottom: 16px;
+        }
+
+        .danger-warning-icon {
+            margin-right: 8px;
+        }
+
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid #e9ecef;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .btn-cancel {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .btn-cancel:hover {
+            background: #e5e7eb;
+        }
+
+        .btn-confirm {
+            background: #4a90d9;
+            color: white;
+        }
+
+        .btn-confirm:hover {
+            background: #3a7bc8;
+        }
+
+        .btn-confirm.danger {
+            background: #dc2626;
+        }
+
+        .btn-confirm.danger:hover {
+            background: #b91c1c;
+        }
     </style>
 </head>
 <body>
@@ -253,11 +406,63 @@
         </div>
     </div>
 
+    <!-- 命令确认对话框 -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal-dialog">
+            <div class="modal-header" id="modalHeader">
+                <span class="modal-icon" id="modalIcon">📋</span>
+                <span class="modal-title" id="modalTitle">命令确认</span>
+            </div>
+            <div class="modal-body">
+                <div class="danger-warning" id="dangerWarning" style="display: none;">
+                    <span class="danger-warning-icon">⚠️</span>
+                    <span id="dangerReason"></span>
+                </div>
+                <div class="command-info">
+                    <div class="command-info-row">
+                        <span class="command-info-label">操作类型:</span>
+                        <span class="command-info-value" id="cmdOperation">-</span>
+                    </div>
+                    <div class="command-info-row">
+                        <span class="command-info-label">执行路径:</span>
+                        <span class="command-info-value" id="cmdWorkingDir">-</span>
+                    </div>
+                    <div class="command-info-row">
+                        <span class="command-info-label">命令内容:</span>
+                    </div>
+                    <div class="command-box" id="cmdContent">-</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-cancel" id="btnCancel">取消</button>
+                <button class="btn btn-confirm" id="btnConfirm">确认执行</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const chatMessages = document.getElementById('chatMessages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const typingIndicator = document.getElementById('typingIndicator');
+        
+        // 确认对话框元素
+        const confirmModal = document.getElementById('confirmModal');
+        const modalHeader = document.getElementById('modalHeader');
+        const modalIcon = document.getElementById('modalIcon');
+        const modalTitle = document.getElementById('modalTitle');
+        const dangerWarning = document.getElementById('dangerWarning');
+        const dangerReason = document.getElementById('dangerReason');
+        const cmdOperation = document.getElementById('cmdOperation');
+        const cmdWorkingDir = document.getElementById('cmdWorkingDir');
+        const cmdContent = document.getElementById('cmdContent');
+        const btnCancel = document.getElementById('btnCancel');
+        const btnConfirm = document.getElementById('btnConfirm');
+
+        // 当前待确认的命令信息
+        let pendingCommand = null;
+        let pendingUserMessage = null;
+        let currentMessageElement = null;
 
         // 配置 marked
         marked.setOptions({
@@ -318,6 +523,211 @@
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
+        function showConfirmDialog(commandData, userMessage, messageElement) {
+            // 保存当前状态
+            pendingCommand = commandData;
+            pendingUserMessage = userMessage;
+            currentMessageElement = messageElement;
+
+            // 设置对话框内容
+            cmdOperation.textContent = commandData.operation || '执行命令';
+            cmdWorkingDir.textContent = commandData.working_dir || '-';
+            cmdContent.textContent = commandData.command || '-';
+
+            // 根据是否危险设置样式
+            if (commandData.is_dangerous) {
+                modalHeader.className = 'modal-header danger';
+                modalIcon.textContent = '⚠️';
+                modalTitle.textContent = '危险命令确认';
+                dangerWarning.style.display = 'block';
+                dangerReason.textContent = commandData.reason || '此命令可能对系统造成影响';
+                btnConfirm.className = 'btn btn-confirm danger';
+            } else {
+                modalHeader.className = 'modal-header warning';
+                modalIcon.textContent = '📋';
+                modalTitle.textContent = '命令确认';
+                dangerWarning.style.display = 'none';
+                btnConfirm.className = 'btn btn-confirm';
+            }
+
+            // 显示对话框
+            confirmModal.classList.add('show');
+        }
+
+        function hideConfirmDialog() {
+            confirmModal.classList.remove('show');
+            pendingCommand = null;
+            pendingUserMessage = null;
+            currentMessageElement = null;
+        }
+
+        async function handleConfirm() {
+            if (!pendingCommand) return;
+
+            const command = pendingCommand.command;
+            const userMessage = pendingUserMessage;
+            const messageElement = currentMessageElement;
+
+            hideConfirmDialog();
+
+            // 更新消息显示
+            if (messageElement) {
+                messageElement.innerHTML = renderMarkdown('⏳ 用户已确认，正在执行命令...');
+            }
+
+            try {
+                // 发送确认请求
+                const confirmResponse = await fetch('/confirm/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        command: command,
+                        user_message: userMessage
+                    })
+                });
+
+                const reader = confirmResponse.body.getReader();
+                const decoder = new TextDecoder();
+                
+                let assistantMessage = '';
+
+                // 读取流式数据
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.type === 'content') {
+                                    assistantMessage = data.accumulated;
+                                    if (messageElement) {
+                                        updateMessage(messageElement, assistantMessage);
+                                    }
+                                } else if (data.type === 'tool_result') {
+                                    if (messageElement) {
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                } else if (data.type === 'done') {
+                                    if (messageElement && data.content) {
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                } else if (data.type === 'error') {
+                                    if (messageElement) {
+                                        updateMessage(messageElement, '❌ 错误: ' + data.content);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Confirm error:', error);
+                if (messageElement) {
+                    updateMessage(messageElement, '❌ 执行命令失败: ' + error.message);
+                }
+            }
+
+            sendButton.disabled = false;
+            messageInput.focus();
+        }
+
+        async function handleCancel() {
+            if (!pendingCommand) return;
+
+            const command = pendingCommand.command;
+            const userMessage = pendingUserMessage;
+            const messageElement = currentMessageElement;
+
+            hideConfirmDialog();
+
+            // 更新消息显示
+            if (messageElement) {
+                messageElement.innerHTML = renderMarkdown('❌ 用户取消执行命令');
+            }
+
+            try {
+                // 发送取消请求，让 LLM 继续处理
+                const cancelResponse = await fetch('/cancel', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        command: command,
+                        user_message: userMessage
+                    })
+                });
+
+                const reader = cancelResponse.body.getReader();
+                const decoder = new TextDecoder();
+                
+                let assistantMessage = '';
+
+                // 读取流式数据
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.type === 'content') {
+                                    assistantMessage = data.accumulated;
+                                    if (messageElement) {
+                                        updateMessage(messageElement, assistantMessage);
+                                    }
+                                } else if (data.type === 'done') {
+                                    if (messageElement && data.content) {
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                } else if (data.type === 'error') {
+                                    if (messageElement) {
+                                        updateMessage(messageElement, '❌ 错误: ' + data.content);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Cancel error:', error);
+                if (messageElement) {
+                    updateMessage(messageElement, '用户已取消命令执行。');
+                }
+            }
+
+            sendButton.disabled = false;
+            messageInput.focus();
+        }
+
+        // 绑定确认对话框按钮事件
+        btnCancel.addEventListener('click', handleCancel);
+        btnConfirm.addEventListener('click', handleConfirm);
+
+        // 点击遮罩层关闭（视为取消）
+        confirmModal.addEventListener('click', (e) => {
+            if (e.target === confirmModal) {
+                handleCancel();
+            }
+        });
+
         async function sendMessage() {
             const content = messageInput.value.trim();
             if (!content) return;
@@ -370,41 +780,17 @@
                                     
                                     updateMessage(messageElement, assistantMessage);
                                     
-                                } else if (data.type === 'dangerous_command') {
-                                    // 危险命令,显示确认对话框
+                                } else if (data.type === 'confirmation_required' || data.type === 'dangerous_command') {
+                                    // 需要确认的命令，显示确认对话框
                                     typingIndicator.classList.remove('show');
                                     
-                                    const confirmed = confirm(
-                                        `${data.message}\n\n命令: ${data.command}\n\n是否执行?`
-                                    );
-                                    
-                                    if (confirmed) {
-                                        // 用户确认,执行命令
-                                        if (messageElement) {
-                                            messageElement.innerHTML = renderMarkdown('⚠️ 用户已确认,正在执行危险命令...');
-                                        }
-                                        
-                                        const confirmResponse = await fetch('/confirm', {
-                                            method: 'POST',
-                                            headers: {
-                                                'Content-Type': 'application/json'
-                                            },
-                                            body: JSON.stringify({
-                                                command: data.command,
-                                                user_message: content
-                                            })
-                                        });
-                                        
-                                        const confirmData = await confirmResponse.json();
-                                        
-                                        if (messageElement) {
-                                            updateMessage(messageElement, confirmData.output || '执行完成');
-                                        }
-                                    } else {
-                                        if (messageElement) {
-                                            messageElement.innerHTML = renderMarkdown('❌ 用户取消执行危险命令');
-                                        }
+                                    if (!messageElement) {
+                                        messageElement = addMessage('', 'assistant');
                                     }
+                                    
+                                    // 显示确认对话框
+                                    showConfirmDialog(data, content, messageElement);
+                                    return; // 等待用户确认/取消
                                     
                                 } else if (data.type === 'done') {
                                     // 流结束

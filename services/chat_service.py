@@ -4,20 +4,21 @@
 统一的对话服务，支持：
 1. 流式输出（token-by-token）
 2. 工具调用（Bash执行）
-3. 危险命令检测和确认
+3. 命令确认机制（所有执行类命令需要用户确认）
 4. 会话历史管理
 """
 import json
 from typing import Generator, Dict, Any, Optional, List
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 from agent.llm import get_llm
 from agent.tools.bash import (
     execute_bash,
     execute_confirmed_bash,
-    DANGEROUS_COMMAND_MARKER
+    execute_cancelled_bash,
+    CONFIRMATION_REQUIRED_MARKER
 )
 
 
@@ -51,10 +52,11 @@ class ChatService:
             
         Returns:
             包含输出和状态的字典：
-            - type: "response" | "dangerous_command" | "error"
+            - type: "response" | "confirmation_required" | "error"
             - output: 助手回复（正常情况）
-            - command: 危险命令（需要确认时）
-            - reason: 危险原因
+            - command: 需要确认的命令
+            - operation: 操作类型
+            - working_dir: 执行路径
         """
         # 获取或创建会话历史
         if session_id not in self._sessions:
@@ -72,15 +74,19 @@ class ChatService:
             # 提取最终输出
             output = self._extract_ai_message(result)
 
-            # 检查是否包含危险命令标记
-            dangerous_info = self._extract_dangerous_command(output)
+            # 检查是否包含需要确认的命令标记
+            confirmation_info = self._extract_confirmation_required(output)
 
-            if dangerous_info:
+            if confirmation_info:
                 return {
-                    "type": "dangerous_command",
-                    "command": dangerous_info["command"],
-                    "reason": dangerous_info["reason"],
-                    "message": dangerous_info["message"],
+                    "type": "confirmation_required",
+                    "command": confirmation_info["command"],
+                    "command_type": confirmation_info.get("command_type", "execute"),
+                    "operation": confirmation_info.get("operation", "执行命令"),
+                    "working_dir": confirmation_info.get("working_dir", ""),
+                    "is_dangerous": confirmation_info.get("is_dangerous", False),
+                    "reason": confirmation_info.get("reason", ""),
+                    "message": confirmation_info.get("message", "需要用户确认"),
                     "session_id": session_id
                 }
 
@@ -119,7 +125,7 @@ class ChatService:
             
         Yields:
             包含流式数据的字典：
-            - type: "content" | "tool_start" | "tool_end" | "dangerous_command" | "done" | "error"
+            - type: "content" | "tool_start" | "tool_end" | "confirmation_required" | "done" | "error"
             - content: 当前token内容
             - accumulated: 累积内容
         """
@@ -137,7 +143,6 @@ class ChatService:
             full_response = ""
 
             # 使用多种 stream_mode
-            # messages 模式提供 token 流，updates 模式提供节点更新
             for chunk in self.agent.stream(
                     {"messages": messages},
                     stream_mode=["messages", "updates"]
@@ -154,7 +159,6 @@ class ChatService:
                         message = data[0]
 
                         # 处理 AIMessageChunk 的 token 流
-                        # 注意: AIMessageChunk.content 是增量内容，不是累积的
                         if hasattr(message, "content") and message.content:
                             token = str(message.content)
                             if token:
@@ -173,14 +177,18 @@ class ChatService:
                             tool_output = data["tools"].get("messages", [])
                             for msg in tool_output:
                                 if hasattr(msg, "content"):
-                                    # 检查危险命令
-                                    dangerous_info = self._extract_dangerous_command(str(msg.content))
-                                    if dangerous_info:
+                                    # 检查是否需要确认
+                                    confirmation_info = self._extract_confirmation_required(str(msg.content))
+                                    if confirmation_info:
                                         yield {
-                                            "type": "dangerous_command",
-                                            "command": dangerous_info["command"],
-                                            "reason": dangerous_info["reason"],
-                                            "message": dangerous_info["message"]
+                                            "type": "confirmation_required",
+                                            "command": confirmation_info["command"],
+                                            "command_type": confirmation_info.get("command_type", "execute"),
+                                            "operation": confirmation_info.get("operation", "执行命令"),
+                                            "working_dir": confirmation_info.get("working_dir", ""),
+                                            "is_dangerous": confirmation_info.get("is_dangerous", False),
+                                            "reason": confirmation_info.get("reason", ""),
+                                            "message": confirmation_info.get("message", "需要用户确认")
                                         }
                                         return
 
@@ -189,14 +197,18 @@ class ChatService:
                 result = self.agent.invoke({"messages": messages})
                 full_response = self._extract_ai_message(result)
 
-                # 检查危险命令
-                dangerous_info = self._extract_dangerous_command(full_response)
-                if dangerous_info:
+                # 检查是否需要确认
+                confirmation_info = self._extract_confirmation_required(full_response)
+                if confirmation_info:
                     yield {
-                        "type": "dangerous_command",
-                        "command": dangerous_info["command"],
-                        "reason": dangerous_info["reason"],
-                        "message": dangerous_info["message"]
+                        "type": "confirmation_required",
+                        "command": confirmation_info["command"],
+                        "command_type": confirmation_info.get("command_type", "execute"),
+                        "operation": confirmation_info.get("operation", "执行命令"),
+                        "working_dir": confirmation_info.get("working_dir", ""),
+                        "is_dangerous": confirmation_info.get("is_dangerous", False),
+                        "reason": confirmation_info.get("reason", ""),
+                        "message": confirmation_info.get("message", "需要用户确认")
                     }
                     return
 
@@ -212,14 +224,18 @@ class ChatService:
                         "accumulated": accumulated
                     }
             else:
-                # 最终检查危险命令
-                dangerous_info = self._extract_dangerous_command(full_response)
-                if dangerous_info:
+                # 最终检查是否需要确认
+                confirmation_info = self._extract_confirmation_required(full_response)
+                if confirmation_info:
                     yield {
-                        "type": "dangerous_command",
-                        "command": dangerous_info["command"],
-                        "reason": dangerous_info["reason"],
-                        "message": dangerous_info["message"]
+                        "type": "confirmation_required",
+                        "command": confirmation_info["command"],
+                        "command_type": confirmation_info.get("command_type", "execute"),
+                        "operation": confirmation_info.get("operation", "执行命令"),
+                        "working_dir": confirmation_info.get("working_dir", ""),
+                        "is_dangerous": confirmation_info.get("is_dangerous", False),
+                        "reason": confirmation_info.get("reason", ""),
+                        "message": confirmation_info.get("message", "需要用户确认")
                     }
                     return
 
@@ -239,14 +255,14 @@ class ChatService:
                 "content": f"执行出错: {str(e)}"
             }
 
-    def confirm_dangerous_command(
+    def confirm_command(
             self,
             command: str,
             session_id: str = "default",
             user_message: str = ""
     ) -> Dict[str, Any]:
         """
-        执行用户确认的危险命令
+        执行用户确认的命令
         
         Args:
             command: 用户确认的命令
@@ -296,14 +312,14 @@ class ChatService:
                 "session_id": session_id
             }
 
-    def confirm_dangerous_command_stream(
+    def confirm_command_stream(
             self,
             command: str,
             session_id: str = "default",
             user_message: str = ""
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        流式执行用户确认的危险命令
+        流式执行用户确认的命令
         
         Args:
             command: 用户确认的命令
@@ -319,19 +335,17 @@ class ChatService:
 
             yield {
                 "type": "tool_result",
-                "content": f"命令已执行: {command}\n结果: {result}"
+                "content": f"✅ 命令已执行: `{command}`\n\n**结果:**\n```\n{result}\n```"
             }
 
             # 如果有用户消息，继续对话
             if user_message:
                 chat_history = self._sessions.get(session_id, [])
-                chat_history.append({
-                    "role": "tool",
-                    "content": f"命令已执行: {command}\n结果: {result}"
-                })
-
-                # 继续Agent处理（流式）
-                messages = self._build_messages(chat_history, user_message)
+                
+                # 构建上下文消息，告诉 LLM 命令执行结果
+                exec_context = f"命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请根据执行结果继续处理用户的请求。"
+                
+                messages = self._build_messages_for_cancel(chat_history, exec_context)
                 full_response = ""
 
                 for chunk in self.agent.stream(
@@ -355,6 +369,8 @@ class ChatService:
                                         }
 
                 if full_response:
+                    # 保存原始用户消息和响应
+                    chat_history.append({"role": "user", "content": user_message})
                     chat_history.append({"role": "assistant", "content": full_response})
 
                 yield {
@@ -371,6 +387,77 @@ class ChatService:
             yield {
                 "type": "error",
                 "content": f"执行命令失败: {str(e)}"
+            }
+
+    def cancel_command_stream(
+            self,
+            command: str,
+            session_id: str = "default",
+            user_message: str = ""
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        处理用户取消的命令，返回上下文给 LLM 继续处理
+        
+        Args:
+            command: 用户取消的命令
+            session_id: 会话ID
+            user_message: 用户原始消息
+            
+        Yields:
+            流式数据字典
+        """
+        try:
+            chat_history = self._sessions.get(session_id, [])
+
+            # 如果有用户消息，让 LLM 继续处理
+            # 注意：不再使用 tool 角色消息，而是构建一个新的用户消息告诉 LLM 取消情况
+            if user_message:
+                # 构建新的用户消息，告诉 LLM 用户取消了命令
+                cancel_context = f"用户取消了之前请求执行的命令。\n取消的命令: {command}\n\n请根据这个情况，给用户提供其他建议或替代方案。"
+                
+                messages = self._build_messages_for_cancel(chat_history, cancel_context)
+                full_response = ""
+
+                for chunk in self.agent.stream(
+                        {"messages": messages},
+                        stream_mode=["messages", "updates"]
+                ):
+                    if isinstance(chunk, tuple):
+                        mode, data = chunk
+
+                        if mode == "messages":
+                            if isinstance(data, tuple) and len(data) >= 1:
+                                message = data[0]
+                                if hasattr(message, "content") and message.content:
+                                    token = str(message.content)
+                                    if token:
+                                        full_response += token
+                                        yield {
+                                            "type": "content",
+                                            "content": token,
+                                            "accumulated": full_response
+                                        }
+
+                if full_response:
+                    # 保存原始用户消息和取消后的响应
+                    chat_history.append({"role": "user", "content": user_message})
+                    chat_history.append({"role": "assistant", "content": full_response})
+
+                yield {
+                    "type": "done",
+                    "content": full_response
+                }
+            else:
+                # 没有原始消息，返回取消信息
+                yield {
+                    "type": "done",
+                    "content": "❌ 用户已取消命令执行。"
+                }
+
+        except Exception as e:
+            yield {
+                "type": "error",
+                "content": f"处理取消失败: {str(e)}"
             }
 
     def get_history(self, session_id: str = "default") -> List[Dict]:
@@ -412,12 +499,46 @@ class ChatService:
                 messages.append(AIMessage(content=content))
             elif role == "system":
                 messages.append(SystemMessage(content=content))
-            elif role == "tool":
-                # 工具消息需要特殊处理
-                messages.append(ToolMessage(content=content, tool_call_id=""))
+            # 注意：不再处理 tool 角色，因为它需要前置的 tool_calls
 
         # 添加当前用户消息
         messages.append(HumanMessage(content=user_input))
+
+        return messages
+
+    def _build_messages_for_cancel(
+            self,
+            chat_history: List[Dict],
+            cancel_context: str
+    ) -> List:
+        """
+        为取消场景构建消息列表
+        
+        不包含当前用户消息（因为还没保存到历史），直接使用取消上下文
+        
+        Args:
+            chat_history: 对话历史
+            cancel_context: 取消上下文消息
+            
+        Returns:
+            LangChain消息对象列表
+        """
+        messages = []
+
+        # 添加历史消息（只包含 user 和 assistant）
+        for msg in chat_history:
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+            elif role == "system":
+                messages.append(SystemMessage(content=content))
+
+        # 添加取消上下文作为新的用户消息
+        messages.append(HumanMessage(content=cancel_context))
 
         return messages
 
@@ -438,18 +559,18 @@ class ChatService:
                     return msg.content
         return ""
 
-    def _extract_dangerous_command(self, output: str) -> Optional[Dict]:
+    def _extract_confirmation_required(self, output: str) -> Optional[Dict]:
         """
-        从输出中提取危险命令信息
+        从输出中提取需要确认的命令信息
         
         Args:
             output: Agent输出
             
         Returns:
-            如果包含危险命令标记，返回命令信息；否则返回None
+            如果包含需要确认的命令标记，返回命令信息；否则返回None
         """
         try:
-            if DANGEROUS_COMMAND_MARKER in output:
+            if CONFIRMATION_REQUIRED_MARKER in output:
                 # 提取JSON部分
                 start_idx = output.find('{')
                 end_idx = output.rfind('}') + 1
@@ -458,11 +579,15 @@ class ChatService:
                     json_str = output[start_idx:end_idx]
                     data = json.loads(json_str)
 
-                    if data.get("type") == DANGEROUS_COMMAND_MARKER:
+                    if data.get("type") == CONFIRMATION_REQUIRED_MARKER:
                         return {
                             "command": data.get("command"),
-                            "reason": data.get("reason"),
-                            "message": data.get("message")
+                            "command_type": data.get("command_type", "execute"),
+                            "operation": data.get("operation", "执行命令"),
+                            "working_dir": data.get("working_dir", ""),
+                            "is_dangerous": data.get("is_dangerous", False),
+                            "reason": data.get("reason", ""),
+                            "message": data.get("message", "需要用户确认")
                         }
         except (json.JSONDecodeError, KeyError):
             pass
