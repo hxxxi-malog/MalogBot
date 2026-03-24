@@ -37,6 +37,10 @@ class ChatService:
         # MVP阶段：使用内存存储对话历史
         # key: session_id, value: 消息列表
         self._sessions: Dict[str, List[Dict]] = {}
+        
+        # 存储每个会话的取消状态
+        # key: session_id, value: 是否已取消
+        self._cancel_flags: Dict[str, bool] = {}
 
     def chat(
             self,
@@ -125,10 +129,13 @@ class ChatService:
             
         Yields:
             包含流式数据的字典：
-            - type: "content" | "tool_start" | "tool_end" | "confirmation_required" | "done" | "error"
+            - type: "content" | "tool_start" | "tool_end" | "confirmation_required" | "done" | "error" | "cancelled"
             - content: 当前token内容
             - accumulated: 累积内容
         """
+        # 清除之前的取消标志
+        self.clear_cancel_flag(session_id)
+        
         # 获取或创建会话历史
         if session_id not in self._sessions:
             self._sessions[session_id] = []
@@ -147,6 +154,18 @@ class ChatService:
                     {"messages": messages},
                     stream_mode=["messages", "updates"]
             ):
+                # 检查是否被取消
+                if self.is_cancelled(session_id):
+                    # 保存已输出的部分到历史
+                    if full_response:
+                        chat_history.append({"role": "user", "content": user_input})
+                        chat_history.append({"role": "assistant", "content": full_response})
+                    yield {
+                        "type": "cancelled",
+                        "content": full_response
+                    }
+                    return
+                
                 # chunk 是 (stream_mode, data) 元组
                 if isinstance(chunk, tuple):
                     mode, data = chunk
@@ -329,6 +348,9 @@ class ChatService:
         Yields:
             流式数据字典
         """
+        # 清除之前的取消标志
+        self.clear_cancel_flag(session_id)
+        
         try:
             # 直接执行命令
             result = execute_confirmed_bash(command)
@@ -352,6 +374,17 @@ class ChatService:
                         {"messages": messages},
                         stream_mode=["messages", "updates"]
                 ):
+                    # 检查是否被取消
+                    if self.is_cancelled(session_id):
+                        if full_response:
+                            chat_history.append({"role": "user", "content": user_message})
+                            chat_history.append({"role": "assistant", "content": full_response})
+                        yield {
+                            "type": "cancelled",
+                            "content": full_response
+                        }
+                        return
+                    
                     if isinstance(chunk, tuple):
                         mode, data = chunk
 
@@ -406,6 +439,9 @@ class ChatService:
         Yields:
             流式数据字典
         """
+        # 清除之前的取消标志
+        self.clear_cancel_flag(session_id)
+        
         try:
             chat_history = self._sessions.get(session_id, [])
 
@@ -422,6 +458,17 @@ class ChatService:
                         {"messages": messages},
                         stream_mode=["messages", "updates"]
                 ):
+                    # 检查是否被取消
+                    if self.is_cancelled(session_id):
+                        if full_response:
+                            chat_history.append({"role": "user", "content": user_message})
+                            chat_history.append({"role": "assistant", "content": full_response})
+                        yield {
+                            "type": "cancelled",
+                            "content": full_response
+                        }
+                        return
+                    
                     if isinstance(chunk, tuple):
                         mode, data = chunk
 
@@ -468,6 +515,19 @@ class ChatService:
         """清空对话历史"""
         if session_id in self._sessions:
             del self._sessions[session_id]
+    
+    def request_cancel(self, session_id: str = "default") -> None:
+        """请求取消当前会话的流式输出"""
+        self._cancel_flags[session_id] = True
+    
+    def is_cancelled(self, session_id: str = "default") -> bool:
+        """检查会话是否已被取消"""
+        return self._cancel_flags.get(session_id, False)
+    
+    def clear_cancel_flag(self, session_id: str = "default") -> None:
+        """清除取消标志"""
+        if session_id in self._cancel_flags:
+            del self._cancel_flags[session_id]
 
     # ==================== 私有方法 ====================
 

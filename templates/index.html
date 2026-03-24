@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat Bot</title>
+    <title>MalogBot</title>
     <!-- Markdown 解析库 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- 代码高亮库 -->
@@ -217,6 +217,25 @@
             cursor: not-allowed;
         }
 
+        .stop-button {
+            padding: 12px 24px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 24px;
+            cursor: pointer;
+            font-size: 16px;
+            display: none;
+        }
+
+        .stop-button:hover {
+            background: #c82333;
+        }
+
+        .stop-button.show {
+            display: block;
+        }
+
         .typing-indicator {
             display: none;
             padding: 12px 16px;
@@ -361,7 +380,7 @@
 <body>
     <div class="chat-container">
         <div class="chat-header">
-            <h1>Chat Bot</h1>
+            <h1>MalogBot</h1>
         </div>
         
         <div class="chat-messages" id="chatMessages">
@@ -377,6 +396,7 @@
                 autocomplete="off"
             >
             <button class="send-button" id="sendButton">发送</button>
+            <button class="stop-button" id="stopButton">停止</button>
         </div>
     </div>
 
@@ -384,7 +404,11 @@
         const chatMessages = document.getElementById('chatMessages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
+        const stopButton = document.getElementById('stopButton');
         const typingIndicator = document.getElementById('typingIndicator');
+
+        // 用于取消请求的 AbortController
+        let currentAbortController = null;
 
         // 配置 marked
         marked.setOptions({
@@ -440,6 +464,101 @@
                 hljs.highlightElement(block);
             });
             chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // 显示停止按钮，隐藏发送按钮
+        function showStopButton() {
+            sendButton.style.display = 'none';
+            stopButton.classList.add('show');
+        }
+
+        // 隐藏停止按钮，显示发送按钮
+        function hideStopButton() {
+            sendButton.style.display = 'block';
+            stopButton.classList.remove('show');
+        }
+
+        // 停止生成
+        async function stopGeneration() {
+            if (currentAbortController) {
+                // 调用后端取消接口
+                try {
+                    await fetch('/stop', { method: 'POST' });
+                } catch (e) {
+                    console.error('Stop request error:', e);
+                }
+                // 取消前端请求
+                currentAbortController.abort();
+                currentAbortController = null;
+            }
+            
+            hideStopButton();
+            sendButton.disabled = false;
+            typingIndicator.classList.remove('show');
+            messageInput.focus();
+        }
+
+        // 流式读取并处理响应的通用函数
+        async function streamReader(reader, messageElement, onDone) {
+            const decoder = new TextDecoder();
+            let assistantMessage = '';
+
+            try {
+                while (true) {
+                    // 检查是否被取消
+                    if (!currentAbortController) {
+                        break;
+                    }
+                    
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.type === 'content') {
+                                    assistantMessage = data.accumulated;
+                                    updateMessage(messageElement, assistantMessage);
+                                } else if (data.type === 'tool_result') {
+                                    updateMessage(messageElement, data.content);
+                                } else if (data.type === 'cancelled') {
+                                    // 用户取消了输出
+                                    if (data.content) {
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                    // 在消息末尾添加取消标记
+                                    const cancelDiv = document.createElement('div');
+                                    cancelDiv.style.cssText = 'margin-top: 8px; padding: 4px 8px; background: #fef3cd; border-radius: 4px; font-size: 12px; color: #856404;';
+                                    cancelDiv.textContent = '⏹️ 输出已停止';
+                                    messageElement.appendChild(cancelDiv);
+                                    return;
+                                } else if (data.type === 'done') {
+                                    if (data.content && !assistantMessage) {
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                } else if (data.type === 'error') {
+                                    updateMessage(messageElement, '❌ 错误: ' + data.content);
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('Request aborted by user');
+                } else {
+                    console.error('Stream error:', error);
+                }
+            }
+            
+            if (onDone) onDone();
         }
 
         function createConfirmCard(commandData, userMessage) {
@@ -513,6 +632,10 @@
 
             // 创建新的消息用于显示后续输出
             const newMessageElement = addMessage('', 'assistant');
+            
+            // 创建新的 AbortController 并显示停止按钮
+            currentAbortController = new AbortController();
+            showStopButton();
 
             try {
                 const confirmResponse = await fetch('/confirm/stream', {
@@ -523,51 +646,30 @@
                     body: JSON.stringify({
                         command: command,
                         user_message: userMessage
-                    })
+                    }),
+                    signal: currentAbortController.signal
                 });
 
                 const reader = confirmResponse.body.getReader();
-                const decoder = new TextDecoder();
                 
-                let assistantMessage = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                
-                                if (data.type === 'content') {
-                                    assistantMessage = data.accumulated;
-                                    updateMessage(newMessageElement, assistantMessage);
-                                } else if (data.type === 'tool_result') {
-                                    updateMessage(newMessageElement, data.content);
-                                } else if (data.type === 'done') {
-                                    if (data.content && !assistantMessage) {
-                                        updateMessage(newMessageElement, data.content);
-                                    }
-                                } else if (data.type === 'error') {
-                                    updateMessage(newMessageElement, '❌ 错误: ' + data.content);
-                                }
-                            } catch (e) {
-                                console.error('Parse error:', e);
-                            }
-                        }
-                    }
-                }
+                await streamReader(reader, newMessageElement, () => {
+                    hideStopButton();
+                    sendButton.disabled = false;
+                    currentAbortController = null;
+                    messageInput.focus();
+                });
             } catch (error) {
-                console.error('Confirm error:', error);
-                updateMessage(newMessageElement, '❌ 执行命令失败: ' + error.message);
+                if (error.name === 'AbortError') {
+                    console.log('Confirm request aborted by user');
+                } else {
+                    console.error('Confirm error:', error);
+                    updateMessage(newMessageElement, '❌ 执行命令失败: ' + error.message);
+                }
+                hideStopButton();
+                sendButton.disabled = false;
+                currentAbortController = null;
+                messageInput.focus();
             }
-
-            sendButton.disabled = false;
-            messageInput.focus();
         }
 
         async function handleCancel(card) {
@@ -580,6 +682,10 @@
 
             // 创建新的消息用于显示后续输出
             const newMessageElement = addMessage('', 'assistant');
+            
+            // 创建新的 AbortController 并显示停止按钮
+            currentAbortController = new AbortController();
+            showStopButton();
 
             try {
                 const cancelResponse = await fetch('/cancel', {
@@ -590,49 +696,30 @@
                     body: JSON.stringify({
                         command: command,
                         user_message: userMessage
-                    })
+                    }),
+                    signal: currentAbortController.signal
                 });
 
                 const reader = cancelResponse.body.getReader();
-                const decoder = new TextDecoder();
                 
-                let assistantMessage = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                
-                                if (data.type === 'content') {
-                                    assistantMessage = data.accumulated;
-                                    updateMessage(newMessageElement, assistantMessage);
-                                } else if (data.type === 'done') {
-                                    if (data.content && !assistantMessage) {
-                                        updateMessage(newMessageElement, data.content);
-                                    }
-                                } else if (data.type === 'error') {
-                                    updateMessage(newMessageElement, '❌ 错误: ' + data.content);
-                                }
-                            } catch (e) {
-                                console.error('Parse error:', e);
-                            }
-                        }
-                    }
-                }
+                await streamReader(reader, newMessageElement, () => {
+                    hideStopButton();
+                    sendButton.disabled = false;
+                    currentAbortController = null;
+                    messageInput.focus();
+                });
             } catch (error) {
-                console.error('Cancel error:', error);
-                updateMessage(newMessageElement, '用户已取消命令执行。');
+                if (error.name === 'AbortError') {
+                    console.log('Cancel request aborted by user');
+                } else {
+                    console.error('Cancel error:', error);
+                    updateMessage(newMessageElement, '用户已取消命令执行。');
+                }
+                hideStopButton();
+                sendButton.disabled = false;
+                currentAbortController = null;
+                messageInput.focus();
             }
-
-            sendButton.disabled = false;
-            messageInput.focus();
         }
 
         async function sendMessage() {
@@ -645,6 +732,12 @@
             messageInput.value = '';
             sendButton.disabled = true;
             typingIndicator.classList.add('show');
+            
+            // 创建新的 AbortController
+            currentAbortController = new AbortController();
+            
+            // 显示停止按钮
+            showStopButton();
 
             try {
                 const response = await fetch('/chat/stream', {
@@ -652,7 +745,8 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ message: content })
+                    body: JSON.stringify({ message: content }),
+                    signal: currentAbortController.signal
                 });
 
                 const reader = response.body.getReader();
@@ -684,6 +778,22 @@
                                     
                                     updateMessage(messageElement, assistantMessage);
                                     
+                                } else if (data.type === 'cancelled') {
+                                    // 用户取消了输出
+                                    typingIndicator.classList.remove('show');
+                                    if (data.content && !messageElement) {
+                                        messageElement = addMessage('', 'assistant');
+                                        updateMessage(messageElement, data.content);
+                                    }
+                                    if (messageElement) {
+                                        // 在消息末尾添加取消标记
+                                        const cancelDiv = document.createElement('div');
+                                        cancelDiv.style.cssText = 'margin-top: 8px; padding: 4px 8px; background: #fef3cd; border-radius: 4px; font-size: 12px; color: #856404;';
+                                        cancelDiv.textContent = '⏹️ 输出已停止';
+                                        messageElement.appendChild(cancelDiv);
+                                    }
+                                    return;
+                                    
                                 } else if (data.type === 'confirmation_required' || data.type === 'dangerous_command') {
                                     typingIndicator.classList.remove('show');
                                     
@@ -693,6 +803,8 @@
                                     
                                     // 追加内联确认卡片
                                     appendConfirmCard(messageElement, data, content);
+                                    hideStopButton();
+                                    sendButton.disabled = false;
                                     return;
                                     
                                 } else if (data.type === 'done') {
@@ -713,16 +825,24 @@
                 }
 
             } catch (error) {
-                console.error('Error:', error);
-                typingIndicator.classList.remove('show');
-                addMessage('发生错误，请重试', 'assistant');
+                if (error.name === 'AbortError') {
+                    // 用户主动取消，不显示错误
+                    console.log('Request aborted by user');
+                } else {
+                    console.error('Error:', error);
+                    typingIndicator.classList.remove('show');
+                    addMessage('发生错误，请重试', 'assistant');
+                }
             }
 
+            hideStopButton();
             sendButton.disabled = false;
+            currentAbortController = null;
             messageInput.focus();
         }
 
         sendButton.addEventListener('click', sendMessage);
+        stopButton.addEventListener('click', stopGeneration);
         
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {

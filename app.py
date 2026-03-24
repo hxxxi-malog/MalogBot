@@ -248,6 +248,22 @@ def get_history():
     })
 
 
+@app.route('/stop', methods=['POST'])
+def stop_generation():
+    """
+    取消当前流式输出
+    
+    用户可以在模型输出期间调用此接口取消输出
+    """
+    session_id = get_session_id()
+    chat_service.request_cancel(session_id)
+    
+    return jsonify({
+        'status': 'ok',
+        'message': '已发送取消请求'
+    })
+
+
 @app.route('/reset', methods=['POST'])
 def reset():
     """重置对话"""
