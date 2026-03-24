@@ -230,157 +230,131 @@
             display: block;
         }
 
-        /* 命令确认对话框样式 */
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .modal-overlay.show {
-            display: flex;
-        }
-
-        .modal-dialog {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-            max-width: 500px;
-            width: 90%;
-            max-height: 80vh;
+        /* 内联命令确认卡片样式 */
+        .command-confirm-card {
+            margin-top: 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
             overflow: hidden;
+            font-size: 13px;
         }
 
-        .modal-header {
-            padding: 20px;
-            border-bottom: 1px solid #e9ecef;
+        .command-confirm-card.danger {
+            border-color: #fecaca;
+        }
+
+        .command-confirm-header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 12px;
-        }
-
-        .modal-header.danger {
-            background: #fff5f5;
-        }
-
-        .modal-header.warning {
-            background: #fffbeb;
-        }
-
-        .modal-icon {
-            font-size: 24px;
-        }
-
-        .modal-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .modal-body {
-            padding: 20px;
-        }
-
-        .command-info {
+            padding: 8px 12px;
             background: #f8f9fa;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
+            border-bottom: 1px solid #e5e7eb;
         }
 
-        .command-info-row {
-            display: flex;
-            margin-bottom: 12px;
-        }
-
-        .command-info-row:last-child {
-            margin-bottom: 0;
-        }
-
-        .command-info-label {
-            font-weight: 600;
-            color: #666;
-            min-width: 80px;
-        }
-
-        .command-info-value {
-            color: #333;
-            flex: 1;
-        }
-
-        .command-box {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 12px;
-            border-radius: 6px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 14px;
-            overflow-x: auto;
-            margin-top: 8px;
-        }
-
-        .danger-warning {
+        .command-confirm-card.danger .command-confirm-header {
             background: #fef2f2;
-            border: 1px solid #fecaca;
-            border-radius: 8px;
-            padding: 12px;
-            color: #dc2626;
-            margin-bottom: 16px;
+            border-bottom-color: #fecaca;
         }
 
-        .danger-warning-icon {
-            margin-right: 8px;
+        .command-confirm-path {
+            color: #666;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
         }
 
-        .modal-footer {
-            padding: 16px 20px;
-            border-top: 1px solid #e9ecef;
+        .command-confirm-actions {
             display: flex;
-            justify-content: flex-end;
-            gap: 12px;
+            gap: 6px;
         }
 
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-size: 14px;
+        .command-confirm-btn {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
             font-weight: 500;
             cursor: pointer;
             border: none;
             transition: all 0.2s;
         }
 
-        .btn-cancel {
+        .command-confirm-btn.cancel {
             background: #f3f4f6;
             color: #374151;
         }
 
-        .btn-cancel:hover {
+        .command-confirm-btn.cancel:hover {
             background: #e5e7eb;
         }
 
-        .btn-confirm {
+        .command-confirm-btn.confirm {
             background: #4a90d9;
             color: white;
         }
 
-        .btn-confirm:hover {
+        .command-confirm-btn.confirm:hover {
             background: #3a7bc8;
         }
 
-        .btn-confirm.danger {
+        .command-confirm-card.danger .command-confirm-btn.confirm {
             background: #dc2626;
         }
 
-        .btn-confirm.danger:hover {
+        .command-confirm-card.danger .command-confirm-btn.confirm:hover {
             background: #b91c1c;
+        }
+
+        .command-confirm-body {
+            padding: 10px 12px;
+        }
+
+        .command-confirm-warning {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #dc2626;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .command-confirm-command {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* 执行中状态 */
+        .command-confirm-card.executing {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .command-confirm-card.executing .command-confirm-btn {
+            cursor: default;
+        }
+
+        /* 已处理状态 */
+        .command-confirm-card.confirmed .command-confirm-actions::before {
+            content: '✅ 已执行';
+            font-size: 12px;
+            color: #16a34a;
+        }
+
+        .command-confirm-card.cancelled .command-confirm-actions::before {
+            content: '❌ 已取消';
+            font-size: 12px;
+            color: #dc2626;
+        }
+
+        .command-confirm-card.confirmed .command-confirm-btn,
+        .command-confirm-card.cancelled .command-confirm-btn {
+            display: none;
         }
     </style>
 </head>
@@ -406,63 +380,11 @@
         </div>
     </div>
 
-    <!-- 命令确认对话框 -->
-    <div class="modal-overlay" id="confirmModal">
-        <div class="modal-dialog">
-            <div class="modal-header" id="modalHeader">
-                <span class="modal-icon" id="modalIcon">📋</span>
-                <span class="modal-title" id="modalTitle">命令确认</span>
-            </div>
-            <div class="modal-body">
-                <div class="danger-warning" id="dangerWarning" style="display: none;">
-                    <span class="danger-warning-icon">⚠️</span>
-                    <span id="dangerReason"></span>
-                </div>
-                <div class="command-info">
-                    <div class="command-info-row">
-                        <span class="command-info-label">操作类型:</span>
-                        <span class="command-info-value" id="cmdOperation">-</span>
-                    </div>
-                    <div class="command-info-row">
-                        <span class="command-info-label">执行路径:</span>
-                        <span class="command-info-value" id="cmdWorkingDir">-</span>
-                    </div>
-                    <div class="command-info-row">
-                        <span class="command-info-label">命令内容:</span>
-                    </div>
-                    <div class="command-box" id="cmdContent">-</div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-cancel" id="btnCancel">取消</button>
-                <button class="btn btn-confirm" id="btnConfirm">确认执行</button>
-            </div>
-        </div>
-    </div>
-
     <script>
         const chatMessages = document.getElementById('chatMessages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const typingIndicator = document.getElementById('typingIndicator');
-        
-        // 确认对话框元素
-        const confirmModal = document.getElementById('confirmModal');
-        const modalHeader = document.getElementById('modalHeader');
-        const modalIcon = document.getElementById('modalIcon');
-        const modalTitle = document.getElementById('modalTitle');
-        const dangerWarning = document.getElementById('dangerWarning');
-        const dangerReason = document.getElementById('dangerReason');
-        const cmdOperation = document.getElementById('cmdOperation');
-        const cmdWorkingDir = document.getElementById('cmdWorkingDir');
-        const cmdContent = document.getElementById('cmdContent');
-        const btnCancel = document.getElementById('btnCancel');
-        const btnConfirm = document.getElementById('btnConfirm');
-
-        // 当前待确认的命令信息
-        let pendingCommand = null;
-        let pendingUserMessage = null;
-        let currentMessageElement = null;
 
         // 配置 marked
         marked.setOptions({
@@ -474,8 +396,8 @@
                 }
                 return hljs.highlightAuto(code).value;
             },
-            breaks: true,  // 支持 GitHub 风格的换行
-            gfm: true      // 支持 GitHub Flavored Markdown
+            breaks: true,
+            gfm: true
         });
 
         function escapeHtml(text) {
@@ -485,7 +407,6 @@
         }
 
         function renderMarkdown(text) {
-            // 先转义 HTML，然后解析 Markdown
             return marked.parse(text);
         }
 
@@ -498,7 +419,6 @@
             
             if (isMarkdown && role === 'assistant') {
                 contentDiv.innerHTML = renderMarkdown(content);
-                // 高亮代码块
                 contentDiv.querySelectorAll('pre code').forEach((block) => {
                     hljs.highlightElement(block);
                 });
@@ -516,67 +436,85 @@
 
         function updateMessage(element, content) {
             element.innerHTML = renderMarkdown(content);
-            // 高亮代码块
             element.querySelectorAll('pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
-        function showConfirmDialog(commandData, userMessage, messageElement) {
-            // 保存当前状态
-            pendingCommand = commandData;
-            pendingUserMessage = userMessage;
-            currentMessageElement = messageElement;
+        function createConfirmCard(commandData, userMessage) {
+            const card = document.createElement('div');
+            card.className = 'command-confirm-card' + (commandData.is_dangerous ? ' danger' : '');
+            card.dataset.command = commandData.command;
+            card.dataset.userMessage = userMessage;
 
-            // 设置对话框内容
-            cmdOperation.textContent = commandData.operation || '执行命令';
-            cmdWorkingDir.textContent = commandData.working_dir || '-';
-            cmdContent.textContent = commandData.command || '-';
+            // 构建卡片内容
+            let cardHtml = `
+                <div class="command-confirm-header">
+                    <span class="command-confirm-path">📁 ${escapeHtml(commandData.working_dir || '-')}</span>
+                    <div class="command-confirm-actions">
+                        <button class="command-confirm-btn cancel">取消</button>
+                        <button class="command-confirm-btn confirm">执行</button>
+                    </div>
+                </div>
+                <div class="command-confirm-body">
+            `;
 
-            // 根据是否危险设置样式
-            if (commandData.is_dangerous) {
-                modalHeader.className = 'modal-header danger';
-                modalIcon.textContent = '⚠️';
-                modalTitle.textContent = '危险命令确认';
-                dangerWarning.style.display = 'block';
-                dangerReason.textContent = commandData.reason || '此命令可能对系统造成影响';
-                btnConfirm.className = 'btn btn-confirm danger';
-            } else {
-                modalHeader.className = 'modal-header warning';
-                modalIcon.textContent = '📋';
-                modalTitle.textContent = '命令确认';
-                dangerWarning.style.display = 'none';
-                btnConfirm.className = 'btn btn-confirm';
+            if (commandData.is_dangerous && commandData.reason) {
+                cardHtml += `
+                    <div class="command-confirm-warning">
+                        <span>⚠️</span>
+                        <span>${escapeHtml(commandData.reason)}</span>
+                    </div>
+                `;
             }
 
-            // 显示对话框
-            confirmModal.classList.add('show');
+            cardHtml += `
+                    <div class="command-confirm-command">${escapeHtml(commandData.command)}</div>
+                </div>
+            `;
+
+            card.innerHTML = cardHtml;
+
+            // 绑定按钮事件
+            const cancelBtn = card.querySelector('.command-confirm-btn.cancel');
+            const confirmBtn = card.querySelector('.command-confirm-btn.confirm');
+
+            cancelBtn.addEventListener('click', () => handleCancel(card));
+            confirmBtn.addEventListener('click', () => handleConfirm(card));
+
+            return card;
         }
 
-        function hideConfirmDialog() {
-            confirmModal.classList.remove('show');
-            pendingCommand = null;
-            pendingUserMessage = null;
-            currentMessageElement = null;
-        }
-
-        async function handleConfirm() {
-            if (!pendingCommand) return;
-
-            const command = pendingCommand.command;
-            const userMessage = pendingUserMessage;
-            const messageElement = currentMessageElement;
-
-            hideConfirmDialog();
-
-            // 更新消息显示
-            if (messageElement) {
-                messageElement.innerHTML = renderMarkdown('⏳ 用户已确认，正在执行命令...');
+        function appendConfirmCard(messageElement, commandData, userMessage) {
+            // 移除已有的确认卡片
+            const existingCard = messageElement.querySelector('.command-confirm-card:not(.confirmed):not(.cancelled)');
+            if (existingCard) {
+                existingCard.remove();
             }
+
+            // 创建并追加新的确认卡片
+            const card = createConfirmCard(commandData, userMessage);
+            messageElement.appendChild(card);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        async function handleConfirm(card) {
+            const command = card.dataset.command;
+            const userMessage = card.dataset.userMessage;
+
+            // 更新卡片状态为执行中
+            card.classList.add('executing');
+            card.querySelector('.command-confirm-btn.confirm').textContent = '执行中...';
+
+            // 标记卡片为已执行（这样状态就固定了）
+            card.classList.remove('executing');
+            card.classList.add('confirmed');
+
+            // 创建新的消息用于显示后续输出
+            const newMessageElement = addMessage('', 'assistant');
 
             try {
-                // 发送确认请求
                 const confirmResponse = await fetch('/confirm/stream', {
                     method: 'POST',
                     headers: {
@@ -593,7 +531,6 @@
                 
                 let assistantMessage = '';
 
-                // 读取流式数据
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -608,21 +545,15 @@
                                 
                                 if (data.type === 'content') {
                                     assistantMessage = data.accumulated;
-                                    if (messageElement) {
-                                        updateMessage(messageElement, assistantMessage);
-                                    }
+                                    updateMessage(newMessageElement, assistantMessage);
                                 } else if (data.type === 'tool_result') {
-                                    if (messageElement) {
-                                        updateMessage(messageElement, data.content);
-                                    }
+                                    updateMessage(newMessageElement, data.content);
                                 } else if (data.type === 'done') {
-                                    if (messageElement && data.content) {
-                                        updateMessage(messageElement, data.content);
+                                    if (data.content && !assistantMessage) {
+                                        updateMessage(newMessageElement, data.content);
                                     }
                                 } else if (data.type === 'error') {
-                                    if (messageElement) {
-                                        updateMessage(messageElement, '❌ 错误: ' + data.content);
-                                    }
+                                    updateMessage(newMessageElement, '❌ 错误: ' + data.content);
                                 }
                             } catch (e) {
                                 console.error('Parse error:', e);
@@ -632,31 +563,25 @@
                 }
             } catch (error) {
                 console.error('Confirm error:', error);
-                if (messageElement) {
-                    updateMessage(messageElement, '❌ 执行命令失败: ' + error.message);
-                }
+                updateMessage(newMessageElement, '❌ 执行命令失败: ' + error.message);
             }
 
             sendButton.disabled = false;
             messageInput.focus();
         }
 
-        async function handleCancel() {
-            if (!pendingCommand) return;
+        async function handleCancel(card) {
+            const command = card.dataset.command;
+            const userMessage = card.dataset.userMessage;
 
-            const command = pendingCommand.command;
-            const userMessage = pendingUserMessage;
-            const messageElement = currentMessageElement;
+            // 标记卡片为已取消（状态固定）
+            card.classList.add('cancelled');
+            card.classList.remove('danger');
 
-            hideConfirmDialog();
-
-            // 更新消息显示
-            if (messageElement) {
-                messageElement.innerHTML = renderMarkdown('❌ 用户取消执行命令');
-            }
+            // 创建新的消息用于显示后续输出
+            const newMessageElement = addMessage('', 'assistant');
 
             try {
-                // 发送取消请求，让 LLM 继续处理
                 const cancelResponse = await fetch('/cancel', {
                     method: 'POST',
                     headers: {
@@ -673,7 +598,6 @@
                 
                 let assistantMessage = '';
 
-                // 读取流式数据
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -688,17 +612,13 @@
                                 
                                 if (data.type === 'content') {
                                     assistantMessage = data.accumulated;
-                                    if (messageElement) {
-                                        updateMessage(messageElement, assistantMessage);
-                                    }
+                                    updateMessage(newMessageElement, assistantMessage);
                                 } else if (data.type === 'done') {
-                                    if (messageElement && data.content) {
-                                        updateMessage(messageElement, data.content);
+                                    if (data.content && !assistantMessage) {
+                                        updateMessage(newMessageElement, data.content);
                                     }
                                 } else if (data.type === 'error') {
-                                    if (messageElement) {
-                                        updateMessage(messageElement, '❌ 错误: ' + data.content);
-                                    }
+                                    updateMessage(newMessageElement, '❌ 错误: ' + data.content);
                                 }
                             } catch (e) {
                                 console.error('Parse error:', e);
@@ -708,25 +628,12 @@
                 }
             } catch (error) {
                 console.error('Cancel error:', error);
-                if (messageElement) {
-                    updateMessage(messageElement, '用户已取消命令执行。');
-                }
+                updateMessage(newMessageElement, '用户已取消命令执行。');
             }
 
             sendButton.disabled = false;
             messageInput.focus();
         }
-
-        // 绑定确认对话框按钮事件
-        btnCancel.addEventListener('click', handleCancel);
-        btnConfirm.addEventListener('click', handleConfirm);
-
-        // 点击遮罩层关闭（视为取消）
-        confirmModal.addEventListener('click', (e) => {
-            if (e.target === confirmModal) {
-                handleCancel();
-            }
-        });
 
         async function sendMessage() {
             const content = messageInput.value.trim();
@@ -740,7 +647,6 @@
             typingIndicator.classList.add('show');
 
             try {
-                // 使用流式接口
                 const response = await fetch('/chat/stream', {
                     method: 'POST',
                     headers: {
@@ -755,7 +661,6 @@
                 let assistantMessage = '';
                 let messageElement = null;
 
-                // 读取流式数据
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -769,7 +674,6 @@
                                 const data = JSON.parse(line.substring(6));
                                 
                                 if (data.type === 'content') {
-                                    // 流式内容
                                     typingIndicator.classList.remove('show');
                                     
                                     assistantMessage = data.accumulated;
@@ -781,25 +685,22 @@
                                     updateMessage(messageElement, assistantMessage);
                                     
                                 } else if (data.type === 'confirmation_required' || data.type === 'dangerous_command') {
-                                    // 需要确认的命令，显示确认对话框
                                     typingIndicator.classList.remove('show');
                                     
                                     if (!messageElement) {
                                         messageElement = addMessage('', 'assistant');
                                     }
                                     
-                                    // 显示确认对话框
-                                    showConfirmDialog(data, content, messageElement);
-                                    return; // 等待用户确认/取消
+                                    // 追加内联确认卡片
+                                    appendConfirmCard(messageElement, data, content);
+                                    return;
                                     
                                 } else if (data.type === 'done') {
-                                    // 流结束
                                     if (messageElement && data.content) {
                                         updateMessage(messageElement, data.content);
                                     }
                                     
                                 } else if (data.type === 'error') {
-                                    // 错误处理
                                     typingIndicator.classList.remove('show');
                                     addMessage(data.content, 'assistant');
                                 }
