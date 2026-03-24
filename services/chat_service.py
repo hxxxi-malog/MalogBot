@@ -8,40 +8,39 @@
 4. 会话历史管理
 """
 import json
-import asyncio
-from typing import Generator, Dict, Any, Optional, List, AsyncGenerator
+from typing import Generator, Dict, Any, Optional, List
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from agent.llm import get_llm
 from agent.tools.bash import (
-    execute_bash, 
-    execute_confirmed_bash, 
+    execute_bash,
+    execute_confirmed_bash,
     DANGEROUS_COMMAND_MARKER
 )
 
 
 class ChatService:
     """统一的对话服务类"""
-    
+
     def __init__(self):
         """初始化对话服务"""
         # 使用流式LLM
         self.llm = get_llm(streaming=True)
         self.tools = [execute_bash]
-        
+
         # 创建支持工具调用的Agent
         self.agent = create_react_agent(self.llm, self.tools)
-        
+
         # MVP阶段：使用内存存储对话历史
         # key: session_id, value: 消息列表
         self._sessions: Dict[str, List[Dict]] = {}
-    
+
     def chat(
-        self, 
-        user_input: str, 
-        session_id: str = "default"
+            self,
+            user_input: str,
+            session_id: str = "default"
     ) -> Dict[str, Any]:
         """
         非流式执行对话
@@ -60,22 +59,22 @@ class ChatService:
         # 获取或创建会话历史
         if session_id not in self._sessions:
             self._sessions[session_id] = []
-        
+
         chat_history = self._sessions[session_id]
-        
+
         try:
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input)
-            
+
             # 使用Agent处理
             result = self.agent.invoke({"messages": messages})
-            
+
             # 提取最终输出
             output = self._extract_ai_message(result)
-            
+
             # 检查是否包含危险命令标记
             dangerous_info = self._extract_dangerous_command(output)
-            
+
             if dangerous_info:
                 return {
                     "type": "dangerous_command",
@@ -84,28 +83,28 @@ class ChatService:
                     "message": dangerous_info["message"],
                     "session_id": session_id
                 }
-            
+
             # 保存对话历史
             chat_history.append({"role": "user", "content": user_input})
             chat_history.append({"role": "assistant", "content": output})
-            
+
             return {
                 "type": "response",
                 "output": output,
                 "session_id": session_id
             }
-            
+
         except Exception as e:
             return {
                 "type": "error",
                 "output": f"执行出错: {str(e)}",
                 "session_id": session_id
             }
-    
+
     def chat_stream(
-        self, 
-        user_input: str, 
-        session_id: str = "default"
+            self,
+            user_input: str,
+            session_id: str = "default"
     ) -> Generator[Dict[str, Any], None, None]:
         """
         流式执行对话（token-by-token）
@@ -127,33 +126,33 @@ class ChatService:
         # 获取或创建会话历史
         if session_id not in self._sessions:
             self._sessions[session_id] = []
-        
+
         chat_history = self._sessions[session_id]
-        
+
         try:
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input)
-            
+
             # 收集完整响应
             full_response = ""
-            
+
             # 使用多种 stream_mode
             # messages 模式提供 token 流，updates 模式提供节点更新
             for chunk in self.agent.stream(
-                {"messages": messages},
-                stream_mode=["messages", "updates"]
+                    {"messages": messages},
+                    stream_mode=["messages", "updates"]
             ):
                 # chunk 是 (stream_mode, data) 元组
                 if isinstance(chunk, tuple):
                     mode, data = chunk
                 else:
                     continue
-                
+
                 if mode == "messages":
                     # messages 模式: (AIMessageChunk, metadata)
                     if isinstance(data, tuple) and len(data) >= 1:
                         message = data[0]
-                        
+
                         # 处理 AIMessageChunk 的 token 流
                         # 注意: AIMessageChunk.content 是增量内容，不是累积的
                         if hasattr(message, "content") and message.content:
@@ -165,7 +164,7 @@ class ChatService:
                                     "content": token,
                                     "accumulated": full_response
                                 }
-                
+
                 elif mode == "updates":
                     # updates 模式: {node_name: node_output}
                     if isinstance(data, dict):
@@ -184,12 +183,12 @@ class ChatService:
                                             "message": dangerous_info["message"]
                                         }
                                         return
-            
+
             # 如果没有获取到内容，使用 invoke 作为备用
             if not full_response:
                 result = self.agent.invoke({"messages": messages})
                 full_response = self._extract_ai_message(result)
-                
+
                 # 检查危险命令
                 dangerous_info = self._extract_dangerous_command(full_response)
                 if dangerous_info:
@@ -200,12 +199,12 @@ class ChatService:
                         "message": dangerous_info["message"]
                     }
                     return
-                
+
                 # 模拟流式输出
                 chunk_size = 10
                 accumulated = ""
                 for i in range(0, len(full_response), chunk_size):
-                    chunk = full_response[i:i+chunk_size]
+                    chunk = full_response[i:i + chunk_size]
                     accumulated += chunk
                     yield {
                         "type": "content",
@@ -223,28 +222,28 @@ class ChatService:
                         "message": dangerous_info["message"]
                     }
                     return
-            
+
             # 保存对话历史
             chat_history.append({"role": "user", "content": user_input})
             chat_history.append({"role": "assistant", "content": full_response})
-            
+
             # 发送完成信号
             yield {
                 "type": "done",
                 "content": full_response
             }
-            
+
         except Exception as e:
             yield {
                 "type": "error",
                 "content": f"执行出错: {str(e)}"
             }
-    
+
     def confirm_dangerous_command(
-        self, 
-        command: str, 
-        session_id: str = "default",
-        user_message: str = ""
+            self,
+            command: str,
+            session_id: str = "default",
+            user_message: str = ""
     ) -> Dict[str, Any]:
         """
         执行用户确认的危险命令
@@ -260,7 +259,7 @@ class ChatService:
         try:
             # 直接执行命令
             result = execute_confirmed_bash(command)
-            
+
             # 如果有用户消息，继续对话
             if user_message:
                 chat_history = self._sessions.get(session_id, [])
@@ -269,39 +268,39 @@ class ChatService:
                     "role": "tool",
                     "content": f"命令已执行: {command}\n结果: {result}"
                 })
-                
+
                 # 继续Agent处理
                 messages = self._build_messages(chat_history, user_message)
                 agent_result = self.agent.invoke({"messages": messages})
                 output = self._extract_ai_message(agent_result)
-                
+
                 # 更新历史
                 chat_history.append({"role": "assistant", "content": output})
-                
+
                 return {
                     "type": "response",
                     "output": output,
                     "session_id": session_id
                 }
-            
+
             return {
                 "type": "response",
                 "output": f"命令已执行:\n```\n{command}\n```\n\n结果:\n{result}",
                 "session_id": session_id
             }
-            
+
         except Exception as e:
             return {
                 "type": "error",
                 "output": f"执行命令失败: {str(e)}",
                 "session_id": session_id
             }
-    
+
     def confirm_dangerous_command_stream(
-        self, 
-        command: str, 
-        session_id: str = "default",
-        user_message: str = ""
+            self,
+            command: str,
+            session_id: str = "default",
+            user_message: str = ""
     ) -> Generator[Dict[str, Any], None, None]:
         """
         流式执行用户确认的危险命令
@@ -317,12 +316,12 @@ class ChatService:
         try:
             # 直接执行命令
             result = execute_confirmed_bash(command)
-            
+
             yield {
                 "type": "tool_result",
                 "content": f"命令已执行: {command}\n结果: {result}"
             }
-            
+
             # 如果有用户消息，继续对话
             if user_message:
                 chat_history = self._sessions.get(session_id, [])
@@ -330,18 +329,18 @@ class ChatService:
                     "role": "tool",
                     "content": f"命令已执行: {command}\n结果: {result}"
                 })
-                
+
                 # 继续Agent处理（流式）
                 messages = self._build_messages(chat_history, user_message)
                 full_response = ""
-                
+
                 for chunk in self.agent.stream(
-                    {"messages": messages},
-                    stream_mode=["messages", "updates"]
+                        {"messages": messages},
+                        stream_mode=["messages", "updates"]
                 ):
                     if isinstance(chunk, tuple):
                         mode, data = chunk
-                        
+
                         if mode == "messages":
                             if isinstance(data, tuple) and len(data) >= 1:
                                 message = data[0]
@@ -354,10 +353,10 @@ class ChatService:
                                             "content": token,
                                             "accumulated": full_response
                                         }
-                
+
                 if full_response:
                     chat_history.append({"role": "assistant", "content": full_response})
-                
+
                 yield {
                     "type": "done",
                     "content": full_response
@@ -367,28 +366,28 @@ class ChatService:
                     "type": "done",
                     "content": f"命令已执行:\n```\n{command}\n```\n\n结果:\n{result}"
                 }
-                
+
         except Exception as e:
             yield {
                 "type": "error",
                 "content": f"执行命令失败: {str(e)}"
             }
-    
+
     def get_history(self, session_id: str = "default") -> List[Dict]:
         """获取对话历史"""
         return self._sessions.get(session_id, [])
-    
+
     def clear_history(self, session_id: str = "default") -> None:
         """清空对话历史"""
         if session_id in self._sessions:
             del self._sessions[session_id]
-    
+
     # ==================== 私有方法 ====================
-    
+
     def _build_messages(
-        self, 
-        chat_history: List[Dict], 
-        user_input: str
+            self,
+            chat_history: List[Dict],
+            user_input: str
     ) -> List:
         """
         构建LangChain消息列表
@@ -401,12 +400,12 @@ class ChatService:
             LangChain消息对象列表
         """
         messages = []
-        
+
         # 添加历史消息
         for msg in chat_history:
             role = msg.get("role")
             content = msg.get("content", "")
-            
+
             if role == "user":
                 messages.append(HumanMessage(content=content))
             elif role == "assistant":
@@ -416,12 +415,12 @@ class ChatService:
             elif role == "tool":
                 # 工具消息需要特殊处理
                 messages.append(ToolMessage(content=content, tool_call_id=""))
-        
+
         # 添加当前用户消息
         messages.append(HumanMessage(content=user_input))
-        
+
         return messages
-    
+
     def _extract_ai_message(self, result: Dict) -> str:
         """
         从Agent结果中提取AI消息
@@ -438,7 +437,7 @@ class ChatService:
                 if isinstance(msg, AIMessage):
                     return msg.content
         return ""
-    
+
     def _extract_dangerous_command(self, output: str) -> Optional[Dict]:
         """
         从输出中提取危险命令信息
@@ -454,11 +453,11 @@ class ChatService:
                 # 提取JSON部分
                 start_idx = output.find('{')
                 end_idx = output.rfind('}') + 1
-                
+
                 if start_idx != -1 and end_idx > start_idx:
                     json_str = output[start_idx:end_idx]
                     data = json.loads(json_str)
-                    
+
                     if data.get("type") == DANGEROUS_COMMAND_MARKER:
                         return {
                             "command": data.get("command"),
@@ -467,13 +466,12 @@ class ChatService:
                         }
         except (json.JSONDecodeError, KeyError):
             pass
-        
+
         return None
 
 
 # 创建全局实例
 chat_service = ChatService()
-
 
 # 导出
 __all__ = ['ChatService', 'chat_service']

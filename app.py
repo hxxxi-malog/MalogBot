@@ -15,7 +15,6 @@ from flask import Flask, render_template, request, jsonify, session, Response
 from config import Config
 from services.chat_service import chat_service
 
-
 # 创建Flask应用
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -51,15 +50,15 @@ def chat():
     try:
         data = request.json
         user_input = data.get('message', '')
-        
+
         if not user_input:
             return jsonify({'error': '消息不能为空'}), 400
-        
+
         session_id = get_session_id()
-        
+
         # 调用ChatService处理对话
         result = chat_service.chat(user_input, session_id)
-        
+
         # 根据返回类型处理
         if result['type'] == 'dangerous_command':
             return jsonify({
@@ -69,9 +68,9 @@ def chat():
                 'message': result['message'],
                 'session_id': result['session_id']
             })
-        
+
         return jsonify(result)
-        
+
     except Exception as e:
         return jsonify({
             'type': 'error',
@@ -88,20 +87,20 @@ def chat_stream():
     data = request.json
     user_input = data.get('message', '')
     session_id = get_session_id()
-    
+
     def generate():
         try:
             if not user_input:
                 yield f"data: {json.dumps({'type': 'error', 'content': '消息不能为空'}, ensure_ascii=False)}\n\n"
                 return
-            
+
             # 调用流式服务
             for chunk in chat_service.chat_stream(user_input, session_id):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': f'服务器错误: {str(e)}'}, ensure_ascii=False)}\n\n"
-    
+
     return Response(
         generate(),
         mimetype='text/event-stream',
@@ -126,21 +125,21 @@ def confirm_command():
         data = request.json
         command = data.get('command', '')
         user_message = data.get('user_message', '')
-        
+
         if not command:
             return jsonify({'error': '命令不能为空'}), 400
-        
+
         session_id = get_session_id()
-        
+
         # 执行确认的命令
         result = chat_service.confirm_dangerous_command(
-            command, 
-            session_id, 
+            command,
+            session_id,
             user_message
         )
-        
+
         return jsonify(result)
-        
+
     except Exception as e:
         return jsonify({
             'type': 'error',
@@ -161,24 +160,24 @@ def confirm_command_stream():
     command = data.get('command', '')
     user_message = data.get('user_message', '')
     session_id = get_session_id()
-    
+
     def generate():
         try:
             if not command:
                 yield f"data: {json.dumps({'type': 'error', 'content': '命令不能为空'}, ensure_ascii=False)}\n\n"
                 return
-            
+
             # 流式执行确认的命令
             for chunk in chat_service.confirm_dangerous_command_stream(
-                command, 
-                session_id, 
-                user_message
+                    command,
+                    session_id,
+                    user_message
             ):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': f'执行命令失败: {str(e)}'}, ensure_ascii=False)}\n\n"
-    
+
     return Response(
         generate(),
         mimetype='text/event-stream',
@@ -195,7 +194,7 @@ def get_history():
     """获取对话历史"""
     session_id = get_session_id()
     history = chat_service.get_history(session_id)
-    
+
     return jsonify({
         'messages': history,
         'session_id': session_id
@@ -208,7 +207,7 @@ def reset():
     session_id = get_session_id()
     chat_service.clear_history(session_id)
     session.clear()
-    
+
     return jsonify({'status': 'ok'})
 
 
