@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat Bot</title>
+    <!-- Markdown 解析库 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- 代码高亮库 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -58,7 +63,6 @@
             padding: 12px 16px;
             border-radius: 16px;
             word-wrap: break-word;
-            white-space: pre-wrap;
         }
 
         .message.user .message-content {
@@ -69,6 +73,109 @@
         .message.assistant .message-content {
             background: #e9ecef;
             color: #333;
+        }
+
+        /* Markdown 渲染样式 */
+        .message-content h1,
+        .message-content h2,
+        .message-content h3,
+        .message-content h4,
+        .message-content h5,
+        .message-content h6 {
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+            font-weight: bold;
+        }
+
+        .message-content h1 { font-size: 1.5em; }
+        .message-content h2 { font-size: 1.3em; }
+        .message-content h3 { font-size: 1.1em; }
+
+        .message-content p {
+            margin: 0.5em 0;
+            white-space: pre-wrap;
+        }
+
+        .message-content ul,
+        .message-content ol {
+            margin: 0.5em 0;
+            padding-left: 1.5em;
+        }
+
+        .message-content li {
+            margin: 0.25em 0;
+        }
+
+        .message-content code {
+            background: rgba(0, 0, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+        }
+
+        .message-content pre {
+            margin: 0.5em 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .message-content pre code {
+            display: block;
+            padding: 12px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            overflow-x: auto;
+            font-size: 0.85em;
+            line-height: 1.5;
+        }
+
+        .message-content blockquote {
+            margin: 0.5em 0;
+            padding: 0.5em 1em;
+            border-left: 3px solid #4a90d9;
+            background: rgba(74, 144, 217, 0.1);
+        }
+
+        .message-content table {
+            border-collapse: collapse;
+            margin: 0.5em 0;
+            width: 100%;
+        }
+
+        .message-content th,
+        .message-content td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        .message-content th {
+            background: #f5f5f5;
+        }
+
+        .message-content a {
+            color: #4a90d9;
+            text-decoration: none;
+        }
+
+        .message-content a:hover {
+            text-decoration: underline;
+        }
+
+        .message-content hr {
+            border: none;
+            border-top: 1px solid #ddd;
+            margin: 1em 0;
+        }
+
+        /* 用户消息中的代码块样式 */
+        .message.user .message-content code {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .message.user .message-content pre code {
+            background: rgba(0, 0, 0, 0.3);
         }
 
         .chat-input-container {
@@ -152,17 +259,62 @@
         const sendButton = document.getElementById('sendButton');
         const typingIndicator = document.getElementById('typingIndicator');
 
-        function addMessage(content, role) {
+        // 配置 marked
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(code, { language: lang }).value;
+                    } catch (e) {}
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,  // 支持 GitHub 风格的换行
+            gfm: true      // 支持 GitHub Flavored Markdown
+        });
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function renderMarkdown(text) {
+            // 先转义 HTML，然后解析 Markdown
+            return marked.parse(text);
+        }
+
+        function addMessage(content, role, isMarkdown = true) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}`;
             
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
-            contentDiv.textContent = content;
+            
+            if (isMarkdown && role === 'assistant') {
+                contentDiv.innerHTML = renderMarkdown(content);
+                // 高亮代码块
+                contentDiv.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            } else {
+                contentDiv.textContent = content;
+            }
             
             messageDiv.appendChild(contentDiv);
             chatMessages.insertBefore(messageDiv, typingIndicator);
             
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            return contentDiv;
+        }
+
+        function updateMessage(element, content) {
+            element.innerHTML = renderMarkdown(content);
+            // 高亮代码块
+            element.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
@@ -171,7 +323,7 @@
             if (!content) return;
 
             // 添加用户消息
-            addMessage(content, 'user');
+            addMessage(content, 'user', false);
             
             messageInput.value = '';
             sendButton.disabled = true;
@@ -213,16 +365,10 @@
                                     assistantMessage = data.accumulated;
                                     
                                     if (!messageElement) {
-                                        const messageDiv = document.createElement('div');
-                                        messageDiv.className = 'message assistant';
-                                        messageElement = document.createElement('div');
-                                        messageElement.className = 'message-content';
-                                        messageDiv.appendChild(messageElement);
-                                        chatMessages.insertBefore(messageDiv, typingIndicator);
+                                        messageElement = addMessage('', 'assistant');
                                     }
                                     
-                                    messageElement.textContent = assistantMessage;
-                                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                                    updateMessage(messageElement, assistantMessage);
                                     
                                 } else if (data.type === 'dangerous_command') {
                                     // 危险命令,显示确认对话框
@@ -235,7 +381,7 @@
                                     if (confirmed) {
                                         // 用户确认,执行命令
                                         if (messageElement) {
-                                            messageElement.textContent = '⚠️ 用户已确认,正在执行危险命令...';
+                                            messageElement.innerHTML = renderMarkdown('⚠️ 用户已确认,正在执行危险命令...');
                                         }
                                         
                                         const confirmResponse = await fetch('/confirm', {
@@ -252,18 +398,18 @@
                                         const confirmData = await confirmResponse.json();
                                         
                                         if (messageElement) {
-                                            messageElement.textContent = confirmData.output || '执行完成';
+                                            updateMessage(messageElement, confirmData.output || '执行完成');
                                         }
                                     } else {
                                         if (messageElement) {
-                                            messageElement.textContent = '❌ 用户取消执行危险命令';
+                                            messageElement.innerHTML = renderMarkdown('❌ 用户取消执行危险命令');
                                         }
                                     }
                                     
                                 } else if (data.type === 'done') {
                                     // 流结束
                                     if (messageElement && data.content) {
-                                        messageElement.textContent = data.content;
+                                        updateMessage(messageElement, data.content);
                                     }
                                     
                                 } else if (data.type === 'error') {
