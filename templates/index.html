@@ -178,7 +178,8 @@
             typingIndicator.classList.add('show');
 
             try {
-                const response = await fetch('/chat', {
+                // 使用流式接口
+                const response = await fetch('/chat/stream', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -186,41 +187,96 @@
                     body: JSON.stringify({ message: content })
                 });
 
-                const data = await response.json();
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
                 
-                typingIndicator.classList.remove('show');
-                
-                if (data.type === 'dangerous_command') {
-                    // 危险命令,显示确认对话框
-                    const confirmed = confirm(
-                        `${data.message}\n\n命令: ${data.command}\n\n是否执行?`
-                    );
+                let assistantMessage = '';
+                let messageElement = null;
+
+                // 读取流式数据
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
                     
-                    if (confirmed) {
-                        // 用户确认,执行命令
-                        addMessage('⚠️ 用户已确认,正在执行危险命令...', 'assistant');
-                        
-                        const confirmResponse = await fetch('/confirm', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                command: data.command,
-                                user_message: content
-                            })
-                        });
-                        
-                        const confirmData = await confirmResponse.json();
-                        addMessage(confirmData.output || '执行完成', 'assistant');
-                    } else {
-                        addMessage('❌ 用户取消执行危险命令', 'assistant');
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.type === 'content') {
+                                    // 流式内容
+                                    typingIndicator.classList.remove('show');
+                                    
+                                    assistantMessage = data.accumulated;
+                                    
+                                    if (!messageElement) {
+                                        const messageDiv = document.createElement('div');
+                                        messageDiv.className = 'message assistant';
+                                        messageElement = document.createElement('div');
+                                        messageElement.className = 'message-content';
+                                        messageDiv.appendChild(messageElement);
+                                        chatMessages.insertBefore(messageDiv, typingIndicator);
+                                    }
+                                    
+                                    messageElement.textContent = assistantMessage;
+                                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                                    
+                                } else if (data.type === 'dangerous_command') {
+                                    // 危险命令,显示确认对话框
+                                    typingIndicator.classList.remove('show');
+                                    
+                                    const confirmed = confirm(
+                                        `${data.message}\n\n命令: ${data.command}\n\n是否执行?`
+                                    );
+                                    
+                                    if (confirmed) {
+                                        // 用户确认,执行命令
+                                        if (messageElement) {
+                                            messageElement.textContent = '⚠️ 用户已确认,正在执行危险命令...';
+                                        }
+                                        
+                                        const confirmResponse = await fetch('/confirm', {
+                                            method: 'POST',
+                                            headers: {
+                                                'Content-Type': 'application/json'
+                                            },
+                                            body: JSON.stringify({
+                                                command: data.command,
+                                                user_message: content
+                                            })
+                                        });
+                                        
+                                        const confirmData = await confirmResponse.json();
+                                        
+                                        if (messageElement) {
+                                            messageElement.textContent = confirmData.output || '执行完成';
+                                        }
+                                    } else {
+                                        if (messageElement) {
+                                            messageElement.textContent = '❌ 用户取消执行危险命令';
+                                        }
+                                    }
+                                    
+                                } else if (data.type === 'done') {
+                                    // 流结束
+                                    if (messageElement && data.content) {
+                                        messageElement.textContent = data.content;
+                                    }
+                                    
+                                } else if (data.type === 'error') {
+                                    // 错误处理
+                                    typingIndicator.classList.remove('show');
+                                    addMessage(data.content, 'assistant');
+                                }
+                                
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
                     }
-                } else if (data.output) {
-                    // 正常回复
-                    addMessage(data.output, 'assistant');
-                } else if (data.error) {
-                    addMessage(`错误: ${data.error}`, 'assistant');
                 }
 
             } catch (error) {

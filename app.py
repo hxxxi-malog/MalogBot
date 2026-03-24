@@ -13,6 +13,7 @@ from flask import Flask, render_template, request, jsonify, session, Response
 
 from config import Config
 from services.chat_service import chat_service
+from services.stream_chat_service import stream_chat_service
 
 # 创建Flask应用
 app = Flask(__name__)
@@ -131,9 +132,46 @@ def reset():
     """重置对话"""
     session_id = get_session_id()
     chat_service.clear_history(session_id)
+    stream_chat_service.clear_history(session_id)
     session.clear()
     
     return jsonify({'status': 'ok'})
+
+
+@app.route('/chat/stream', methods=['POST'])
+def chat_stream():
+    """
+    流式聊天接口
+    使用Server-Sent Events (SSE) 返回流式数据
+    """
+    # 在请求上下文中获取数据
+    data = request.json
+    user_input = data.get('message', '')
+    session_id = get_session_id()
+    
+    def generate():
+        try:
+            if not user_input:
+                yield f"data: {json.dumps({'type': 'error', 'content': '消息不能为空'}, ensure_ascii=False)}\n\n"
+                return
+            
+            # 调用流式服务
+            for chunk in stream_chat_service.chat_stream(user_input, session_id):
+                # 将数据编码为SSE格式
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'服务器错误: {str(e)}'}, ensure_ascii=False)}\n\n"
+    
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
 
 
 if __name__ == '__main__':
