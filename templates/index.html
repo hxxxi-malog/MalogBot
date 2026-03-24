@@ -406,6 +406,9 @@
         const sendButton = document.getElementById('sendButton');
         const stopButton = document.getElementById('stopButton');
         const typingIndicator = document.getElementById('typingIndicator');
+        
+        // 保存当前对话的原始用户消息，用于多步骤确认
+        let currentOriginalUserMessage = '';
 
         // 用于取消请求的 AbortController
         let currentAbortController = null;
@@ -536,6 +539,13 @@
                                     cancelDiv.style.cssText = 'margin-top: 8px; padding: 4px 8px; background: #fef3cd; border-radius: 4px; font-size: 12px; color: #856404;';
                                     cancelDiv.textContent = '⏹️ 输出已停止';
                                     messageElement.appendChild(cancelDiv);
+                                    return;
+                                } else if (data.type === 'confirmation_required' || data.type === 'dangerous_command') {
+                                    // 需要用户确认命令
+                                    // 使用保存的原始用户消息，而不是助手响应
+                                    appendConfirmCard(messageElement, data, currentOriginalUserMessage);
+                                    hideStopButton();
+                                    sendButton.disabled = false;
                                     return;
                                 } else if (data.type === 'done') {
                                     if (data.content && !assistantMessage) {
@@ -726,6 +736,9 @@
             const content = messageInput.value.trim();
             if (!content) return;
 
+            // 保存原始用户消息，用于后续确认
+            currentOriginalUserMessage = content;
+            
             // 添加用户消息
             addMessage(content, 'user', false);
             

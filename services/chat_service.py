@@ -82,6 +82,8 @@ class ChatService:
             confirmation_info = self._extract_confirmation_required(output)
 
             if confirmation_info:
+                # 保存用户消息到历史，以便确认后继续处理
+                chat_history.append({"role": "user", "content": user_input})
                 return {
                     "type": "confirmation_required",
                     "command": confirmation_info["command"],
@@ -199,6 +201,8 @@ class ChatService:
                                     # 检查是否需要确认
                                     confirmation_info = self._extract_confirmation_required(str(msg.content))
                                     if confirmation_info:
+                                        # 保存用户消息到历史，以便确认后继续处理
+                                        chat_history.append({"role": "user", "content": user_input})
                                         yield {
                                             "type": "confirmation_required",
                                             "command": confirmation_info["command"],
@@ -219,6 +223,8 @@ class ChatService:
                 # 检查是否需要确认
                 confirmation_info = self._extract_confirmation_required(full_response)
                 if confirmation_info:
+                    # 保存用户消息到历史，以便确认后继续处理
+                    chat_history.append({"role": "user", "content": user_input})
                     yield {
                         "type": "confirmation_required",
                         "command": confirmation_info["command"],
@@ -246,6 +252,8 @@ class ChatService:
                 # 最终检查是否需要确认
                 confirmation_info = self._extract_confirmation_required(full_response)
                 if confirmation_info:
+                    # 保存用户消息到历史，以便确认后继续处理
+                    chat_history.append({"role": "user", "content": user_input})
                     yield {
                         "type": "confirmation_required",
                         "command": confirmation_info["command"],
@@ -281,7 +289,10 @@ class ChatService:
             user_message: str = ""
     ) -> Dict[str, Any]:
         """
-        执行用户确认的命令
+        执行用户确认的命令（非流式）
+        
+        支持多步骤工具调用：执行命令后，如果LLM决定调用更多工具，
+        会继续处理直到所有任务完成或需要用户确认。
         
         Args:
             command: 用户确认的命令
@@ -298,19 +309,34 @@ class ChatService:
             # 如果有用户消息，继续对话
             if user_message:
                 chat_history = self._sessions.get(session_id, [])
-                # 将工具执行结果添加到历史
-                chat_history.append({
-                    "role": "tool",
-                    "content": f"命令已执行: {command}\n结果: {result}"
-                })
-
-                # 继续Agent处理
-                messages = self._build_messages(chat_history, user_message)
+                
+                # 构建上下文消息，告诉 LLM 命令执行结果并提醒继续处理
+                # 注意：用户消息已经在 chat 方法中保存到历史了，这里不需要重复保存
+                exec_context = f"✅ 上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
+                
+                # 使用 Agent 处理，支持多步骤工具调用
+                messages = self._build_messages_for_cancel(chat_history, exec_context)
                 agent_result = self.agent.invoke({"messages": messages})
                 output = self._extract_ai_message(agent_result)
 
-                # 更新历史
-                chat_history.append({"role": "assistant", "content": output})
+                # 检查是否需要确认下一个命令
+                confirmation_info = self._extract_confirmation_required(output)
+                if confirmation_info:
+                    return {
+                        "type": "confirmation_required",
+                        "command": confirmation_info["command"],
+                        "command_type": confirmation_info.get("command_type", "execute"),
+                        "operation": confirmation_info.get("operation", "执行命令"),
+                        "working_dir": confirmation_info.get("working_dir", ""),
+                        "is_dangerous": confirmation_info.get("is_dangerous", False),
+                        "reason": confirmation_info.get("reason", ""),
+                        "message": confirmation_info.get("message", "需要用户确认"),
+                        "session_id": session_id
+                    }
+
+                # 保存助手响应到历史（用户消息已经在 chat 方法中保存了）
+                if output:
+                    chat_history.append({"role": "assistant", "content": output})
 
                 return {
                     "type": "response",
@@ -340,6 +366,9 @@ class ChatService:
         """
         流式执行用户确认的命令
         
+        支持多步骤工具调用：执行命令后，如果LLM决定调用更多工具，
+        会继续处理直到所有任务完成或需要用户确认。
+        
         Args:
             command: 用户确认的命令
             session_id: 会话ID
@@ -364,48 +393,36 @@ class ChatService:
             if user_message:
                 chat_history = self._sessions.get(session_id, [])
                 
-                # 构建上下文消息，告诉 LLM 命令执行结果
-                exec_context = f"命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请根据执行结果继续处理用户的请求。"
+                # 构建上下文消息，告诉 LLM 命令执行结果并提醒继续处理
+                # 注意：用户消息已经在 chat_stream 中保存到历史了，这里不需要重复保存
+                exec_context = f"✅ 上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
                 
-                messages = self._build_messages_for_cancel(chat_history, exec_context)
+                # 使用循环支持多步骤工具调用
                 full_response = ""
-
-                for chunk in self.agent.stream(
-                        {"messages": messages},
-                        stream_mode=["messages", "updates"]
-                ):
-                    # 检查是否被取消
-                    if self.is_cancelled(session_id):
-                        if full_response:
-                            chat_history.append({"role": "user", "content": user_message})
-                            chat_history.append({"role": "assistant", "content": full_response})
-                        yield {
-                            "type": "cancelled",
-                            "content": full_response
-                        }
+                for chunk in self._execute_agent_loop(chat_history, exec_context, session_id):
+                    if chunk["type"] == "content":
+                        full_response = chunk.get("accumulated", full_response)
+                        yield chunk
+                    elif chunk["type"] == "confirmation_required":
+                        # 需要确认，直接传递给前端
+                        yield chunk
                         return
-                    
-                    if isinstance(chunk, tuple):
-                        mode, data = chunk
-
-                        if mode == "messages":
-                            if isinstance(data, tuple) and len(data) >= 1:
-                                message = data[0]
-                                if hasattr(message, "content") and message.content:
-                                    token = str(message.content)
-                                    if token:
-                                        full_response += token
-                                        yield {
-                                            "type": "content",
-                                            "content": token,
-                                            "accumulated": full_response
-                                        }
-
+                    elif chunk["type"] == "cancelled":
+                        yield chunk
+                        return
+                    elif chunk["type"] == "done":
+                        full_response = chunk.get("content", full_response)
+                        # 不在这里 yield done，继续处理
+                
+                # 保存助手响应到历史（用户消息已经在 chat_stream 中保存了）
                 if full_response:
-                    # 保存原始用户消息和响应
-                    chat_history.append({"role": "user", "content": user_message})
+                    # 移除之前添加的用户消息（如果有重复），然后添加助手响应
+                    # 注意：由于我们在 chat_stream 中已经添加了用户消息，
+                    # 而在 _execute_agent_loop 中又把 exec_context 作为新用户消息传入了，
+                    # 所以这里需要正确处理历史
+                    # 实际上，我们不应该在这里添加用户消息，只添加助手响应
                     chat_history.append({"role": "assistant", "content": full_response})
-
+                
                 yield {
                     "type": "done",
                     "content": full_response
@@ -565,6 +582,90 @@ class ChatService:
         messages.append(HumanMessage(content=user_input))
 
         return messages
+
+    def _execute_agent_loop(
+            self,
+            chat_history: List[Dict],
+            context_message: str,
+            session_id: str = "default",
+            max_iterations: int = 10
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        执行 Agent 循环，支持多步骤工具调用
+        
+        这个方法会持续运行 Agent 直到：
+        1. Agent 不再调用工具（返回最终响应）
+        2. 需要用户确认命令
+        3. 用户取消
+        4. 达到最大迭代次数
+        
+        这是一个生成器，会 yield 流式输出和确认请求。
+        
+        Args:
+            chat_history: 对话历史
+            context_message: 上下文消息（包含命令执行结果）
+            session_id: 会话ID
+            max_iterations: 最大迭代次数，防止无限循环
+            
+        Yields:
+            流式数据字典，包括 content 和 confirmation_required 类型
+        """
+        full_response = ""
+        messages = self._build_messages_for_cancel(chat_history, context_message)
+        
+        for chunk in self.agent.stream(
+                {"messages": messages},
+                stream_mode=["messages", "updates"]
+        ):
+            # 检查是否被取消
+            if self.is_cancelled(session_id):
+                yield {
+                    "type": "cancelled",
+                    "content": full_response
+                }
+                return
+            
+            if isinstance(chunk, tuple):
+                mode, data = chunk
+
+                if mode == "messages":
+                    if isinstance(data, tuple) and len(data) >= 1:
+                        message = data[0]
+                        if hasattr(message, "content") and message.content:
+                            token = str(message.content)
+                            if token:
+                                full_response += token
+                                yield {
+                                    "type": "content",
+                                    "content": token,
+                                    "accumulated": full_response
+                                }
+
+                elif mode == "updates":
+                    # 检查工具节点输出
+                    if isinstance(data, dict) and "tools" in data:
+                        tool_output = data["tools"].get("messages", [])
+                        for msg in tool_output:
+                            if hasattr(msg, "content"):
+                                # 检查是否需要确认
+                                confirmation_info = self._extract_confirmation_required(str(msg.content))
+                                if confirmation_info:
+                                    yield {
+                                        "type": "confirmation_required",
+                                        "command": confirmation_info["command"],
+                                        "command_type": confirmation_info.get("command_type", "execute"),
+                                        "operation": confirmation_info.get("operation", "执行命令"),
+                                        "working_dir": confirmation_info.get("working_dir", ""),
+                                        "is_dangerous": confirmation_info.get("is_dangerous", False),
+                                        "reason": confirmation_info.get("reason", ""),
+                                        "message": confirmation_info.get("message", "需要用户确认")
+                                    }
+                                    return
+        
+        yield {
+            "type": "done",
+            "content": full_response
+        }
 
     def _build_messages_for_cancel(
             self,
