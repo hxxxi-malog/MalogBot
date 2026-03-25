@@ -144,6 +144,83 @@
             color: #fc8181;
         }
 
+        /* 设置区域 */
+        .settings-section {
+            padding: 15px 20px;
+            border-top: 1px solid #4a5568;
+        }
+
+        .settings-title {
+            font-size: 12px;
+            color: #a0aec0;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .setting-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+        }
+
+        .setting-label {
+            font-size: 14px;
+            color: white;
+        }
+
+        .setting-description {
+            font-size: 11px;
+            color: #a0aec0;
+            margin-top: 2px;
+        }
+
+        /* 开关按钮样式 */
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 26px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #4a5568;
+            transition: .3s;
+            border-radius: 26px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #4a90d9;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+        }
+
         /* 主聊天区域 */
         .chat-container {
             flex: 1;
@@ -304,6 +381,15 @@
             border-top: 1px solid #e9ecef;
             display: flex;
             gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .chat-input-wrapper {
+            flex: 1;
+            display: flex;
+            gap: 10px;
+            min-width: 200px;
         }
 
         .chat-input {
@@ -346,15 +432,96 @@
             border-radius: 24px;
             cursor: pointer;
             font-size: 16px;
-            display: none;
         }
-
+        
         .stop-button:hover {
             background: #c82333;
         }
-
+        
         .stop-button.show {
             display: block;
+        }
+        
+        /* 联网搜索开关（输入框旁边） */
+        .web-search-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        
+        .web-search-toggle:hover {
+            background: #e9ecef;
+        }
+        
+        .web-search-toggle.active {
+            background: #e3f2fd;
+            border-color: #4a90d9;
+        }
+        
+        .web-search-toggle-icon {
+            font-size: 18px;
+        }
+        
+        .web-search-toggle-label {
+            font-size: 14px;
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .web-search-toggle.active .web-search-toggle-label {
+            color: #4a90d9;
+        }
+        
+        /* 小型开关样式 */
+        .mini-toggle {
+            position: relative;
+            width: 36px;
+            height: 20px;
+        }
+        
+        .mini-toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .mini-toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .3s;
+            border-radius: 20px;
+        }
+        
+        .mini-toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        
+        .mini-toggle input:checked + .mini-toggle-slider {
+            background-color: #4a90d9;
+        }
+        
+        .mini-toggle input:checked + .mini-toggle-slider:before {
+            transform: translateX(16px);
         }
 
         .typing-indicator {
@@ -553,6 +720,9 @@
             max-width: 600px;
             position: relative;
             margin-bottom: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .welcome-input {
@@ -595,7 +765,28 @@
 
         .welcome-send-btn:disabled {
             background: #ccc;
-            cursor: not-allowed;
+        }
+        
+        /* 欢迎页联网搜索开关 */
+        .welcome-options {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            padding: 0 8px;
+        }
+        
+        .welcome-options .web-search-toggle {
+            background: white;
+            border: 1px solid #e2e8f0;
+        }
+        
+        .welcome-options .web-search-toggle:hover {
+            background: #f8f9fa;
+        }
+        
+        .welcome-options .web-search-toggle.active {
+            background: #e3f2fd;
+            border-color: #4a90d9;
         }
 
         .history-section {
@@ -750,14 +941,26 @@
         <p class="welcome-subtitle">您的智能助手，随时准备为您解答问题</p>
         
         <div class="welcome-input-container">
-            <input 
-                type="text" 
-                class="welcome-input" 
-                id="welcomeInput" 
-                placeholder="输入您的问题，开始新对话..."
-                autocomplete="off"
-            >
-            <button class="welcome-send-btn" id="welcomeSendBtn">➤</button>
+            <div style="position: relative;">
+                <input 
+                    type="text" 
+                    class="welcome-input" 
+                    id="welcomeInput" 
+                    placeholder="输入您的问题，开始新对话..."
+                    autocomplete="off"
+                >
+                <button class="welcome-send-btn" id="welcomeSendBtn">➤</button>
+            </div>
+            <div class="welcome-options">
+                <div class="web-search-toggle" id="welcomeWebSearchToggle">
+                    <span class="web-search-toggle-icon">🌐</span>
+                    <span class="web-search-toggle-label">联网搜索</span>
+                    <label class="mini-toggle">
+                        <input type="checkbox" id="welcomeWebSearchCheckbox">
+                        <span class="mini-toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
         </div>
         
         <div class="history-section" id="historySection">
@@ -782,15 +985,25 @@
         </div>
         
         <div class="chat-input-container">
-            <input 
-                type="text" 
-                class="chat-input" 
-                id="messageInput" 
-                placeholder="输入消息..."
-                autocomplete="off"
-            >
-            <button class="send-button" id="sendButton">发送</button>
-            <button class="stop-button" id="stopButton">停止</button>
+            <div class="web-search-toggle" id="chatWebSearchToggle">
+                <span class="web-search-toggle-icon">🌐</span>
+                <span class="web-search-toggle-label">联网搜索</span>
+                <label class="mini-toggle">
+                    <input type="checkbox" id="chatWebSearchCheckbox">
+                    <span class="mini-toggle-slider"></span>
+                </label>
+            </div>
+            <div class="chat-input-wrapper">
+                <input 
+                    type="text" 
+                    class="chat-input" 
+                    id="messageInput" 
+                    placeholder="输入消息..."
+                    autocomplete="off"
+                >
+                <button class="send-button" id="sendButton">发送</button>
+                <button class="stop-button" id="stopButton">停止</button>
+            </div>
         </div>
     </div>
 
@@ -810,6 +1023,12 @@
         const welcomeSendBtn = document.getElementById('welcomeSendBtn');
         const historyList = document.getElementById('historyList');
         
+        // 联网搜索开关元素
+        const welcomeWebSearchToggle = document.getElementById('welcomeWebSearchToggle');
+        const welcomeWebSearchCheckbox = document.getElementById('welcomeWebSearchCheckbox');
+        const chatWebSearchToggle = document.getElementById('chatWebSearchToggle');
+        const chatWebSearchCheckbox = document.getElementById('chatWebSearchCheckbox');
+        
         // 保存当前对话的原始用户消息，用于多步骤确认
         let currentOriginalUserMessage = '';
 
@@ -824,6 +1043,21 @@
 
         // 会话列表缓存
         let sessionsCache = [];
+        
+        // 联网搜索状态
+        let webSearchEnabled = false;
+        
+        // 更新联网搜索开关的显示状态
+        function updateWebSearchToggleUI() {
+            if (welcomeWebSearchToggle && welcomeWebSearchCheckbox) {
+                welcomeWebSearchCheckbox.checked = webSearchEnabled;
+                welcomeWebSearchToggle.classList.toggle('active', webSearchEnabled);
+            }
+            if (chatWebSearchToggle && chatWebSearchCheckbox) {
+                chatWebSearchCheckbox.checked = webSearchEnabled;
+                chatWebSearchToggle.classList.toggle('active', webSearchEnabled);
+            }
+        }
 
         // 配置 marked
         marked.setOptions({
@@ -1470,6 +1704,11 @@
                     currentSessionId = data.session_id;
                     clearChatMessages();
                     
+                    // 同步联网搜索状态到新会话
+                    if (webSearchEnabled) {
+                        await toggleWebSearch(true);
+                    }
+                    
                     if (switchToChat) {
                         showChatInterface();
                     }
@@ -1521,6 +1760,9 @@
                     await loadSessionHistory(sessionId);
                     showChatInterface();
                     await loadSessions();
+                    
+                    // 加载该会话的联网搜索状态
+                    await loadWebSearchStatus();
                 }
             } catch (error) {
                 console.error('Switch session error:', error);
@@ -1589,8 +1831,72 @@
             }
         });
 
+        // ==================== 联网搜索功能 ====================
+        
+        // 加载联网搜索状态
+        async function loadWebSearchStatus() {
+            try {
+                // 如果有当前会话，从服务器加载状态
+                if (currentSessionId) {
+                    const response = await fetch('/web-search/status');
+                    const data = await response.json();
+                    webSearchEnabled = data.enabled || false;
+                }
+                // 更新 UI
+                updateWebSearchToggleUI();
+            } catch (error) {
+                console.error('Failed to load web search status:', error);
+            }
+        }
+        
+        // 切换联网搜索
+        async function toggleWebSearch(enabled) {
+            webSearchEnabled = enabled;
+            updateWebSearchToggleUI();
+            
+            // 如果有当前会话，同步到服务器
+            if (currentSessionId) {
+                try {
+                    const response = await fetch('/web-search/toggle', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ enabled: enabled })
+                    });
+                    const data = await response.json();
+                    if (data.error) {
+                        console.error('Failed to toggle web search:', data.error);
+                        webSearchEnabled = !enabled;
+                        updateWebSearchToggleUI();
+                    } else {
+                        console.log('Web search toggled:', enabled);
+                    }
+                } catch (error) {
+                    console.error('Failed to toggle web search:', error);
+                    webSearchEnabled = !enabled;
+                    updateWebSearchToggleUI();
+                }
+            }
+        }
+        
+        // 监听欢迎页联网搜索开关
+        if (welcomeWebSearchCheckbox) {
+            welcomeWebSearchCheckbox.addEventListener('change', (e) => {
+                toggleWebSearch(e.target.checked);
+            });
+        }
+        
+        // 监听聊天界面联网搜索开关
+        if (chatWebSearchCheckbox) {
+            chatWebSearchCheckbox.addEventListener('change', (e) => {
+                toggleWebSearch(e.target.checked);
+            });
+        }
+
         // 初始化
         loadSessions();
+        updateWebSearchToggleUI();
     </script>
 </body>
 </html>
