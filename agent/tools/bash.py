@@ -330,26 +330,13 @@ CONFIRMATION_REQUIRED_MARKER = "__CONFIRMATION_REQUIRED__"
 @tool
 def execute_bash(command: str) -> str:
     """
-    执行bash命令并返回结果。
-    
-    用于执行shell命令，如创建文件、运行程序、查看文件内容等。
-    
-    重要说明：
-    - 读取类命令（ls、cat、grep等）可以直接执行
-    - 执行类命令（写入、删除、运行程序等）需要用户确认后才能执行
-    - 危险命令（如sudo、rm等）会特别提示风险
-    - 已增强安全检测，防止命令注入攻击
+    执行bash命令。读取类命令直接执行，修改类命令需要用户确认。
     
     Args:
         command: 要执行的bash命令
         
     Returns:
-        命令的输出结果，或需要确认的命令请求
-        
-    Examples:
-        execute_bash("ls -la")  # 列出当前目录文件（读取类，直接执行）
-        execute_bash("echo 'hello' > test.txt")  # 创建文件（执行类，需要确认）
-        execute_bash("python script.py")  # 运行Python脚本（执行类，需要确认）
+        命令执行结果或确认请求
     """
     import json
     
@@ -412,6 +399,58 @@ def execute_cancelled_bash(command: str) -> str:
     return f"用户取消了命令执行: {command}"
 
 
+# ==================== 详细说明（供动态加载） ====================
+
+@tool
+def get_bash_tool_detailed_usage() -> str:
+    """
+    获取 bash 工具的详细使用说明。
+    
+    当你不确定如何使用 execute_bash 工具，或需要了解命令分类、安全策略等信息时，
+    调用此工具获取完整的使用指南。
+    
+    Returns:
+        详细的使用说明文本
+    """
+    return """
+## Bash 工具详细使用说明
+
+### 命令分类
+
+**安全命令（可直接执行）**：
+- 文件查看：ls, cat, head, tail, less, more, tree, du, df, wc, file, stat
+- 文本处理：grep, sed, awk, cut, sort, uniq, diff, find, locate
+- 系统信息：pwd, whoami, hostname, uname, date, env, echo, which
+
+**需要确认的命令**：
+- 文件写入：echo >, cat >, tee
+- 文件操作：mv, cp, rm, mkdir, rmdir
+- 系统命令：sudo, chmod, chown
+- 危险命令：dd, mkfs, shutdown 等
+
+### 安全策略
+
+1. **管道命令是安全的**：可以自由使用管道操作符(|)组合多个安全的读取命令
+   - 示例：`ls /Users/malog/Desktop | grep malog`
+   - 示例：`cat file.txt | grep pattern`
+
+2. **路径处理**：
+   - 优先使用绝对路径：`/Users/malog/Desktop`
+   - `~` 符号可能不会被正确展开，建议使用完整路径或 `$HOME` 变量
+
+3. **安全检测**：
+   - 自动检测命令注入攻击（如 `;`, `&&`, `||`, `$()` 等）
+   - 危险命令会特别提示风险
+   - 执行类命令需要用户确认后才能执行
+
+### 最佳实践
+
+1. 先确认文件存在：使用 `ls` 或 `test -f` 命令
+2. 避免重复执行相同命令，记住之前的查询结果
+3. 如果某个步骤失败，分析错误原因并提供替代方案
+"""
+
+
 # 导出工具列表
 __all__ = [
     'execute_bash', 
@@ -419,5 +458,6 @@ __all__ = [
     'execute_cancelled_bash',
     'check_dangerous_command', 
     'get_command_type',
+    'get_bash_tool_detailed_usage',
     'CONFIRMATION_REQUIRED_MARKER'
 ]

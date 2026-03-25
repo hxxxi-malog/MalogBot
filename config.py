@@ -63,3 +63,12 @@ class Config:
         'rm -rf .venv',  # 允许删除虚拟环境
         'rm -rf venv',
     ]
+
+    # Web 搜索配置（百度云 MCP）
+    # 百度云 Web Search MCP 服务
+    BAIDU_MCP_API_KEY = os.getenv('BAIDU_MCP_API_KEY')  # 百度云 API Key
+    BAIDU_MCP_URL = os.getenv('BAIDU_MCP_URL', 'https://qianfan.baidubce.com/v2/tools/web-search/mcp')
+    WEB_SEARCH_ENABLED = os.getenv('WEB_SEARCH_ENABLED', 'false').lower() == 'true'  # 默认关闭
+
+    # MCP 配置
+    MCP_ENABLED = os.getenv('MCP_ENABLED', 'true').lower() == 'true'  # 是否启用 MCP，默认开启

@@ -18,11 +18,14 @@ from agent.llm import get_llm
 from agent.prompts import SYSTEM_PROMPT
 from agent.tools.bash import (
     execute_bash,
+    get_bash_tool_detailed_usage,
     execute_confirmed_bash,
     CONFIRMATION_REQUIRED_MARKER
 )
+from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
+from config import Config
 
 
 class ChatService:
@@ -32,14 +35,76 @@ class ChatService:
         """初始化对话服务"""
         # 使用流式LLM
         self.llm = get_llm(streaming=True)
-        self.tools = [execute_bash]
-
-        # 创建支持工具调用的Agent
-        self.agent = create_react_agent(self.llm, self.tools)
+        
+        # 基础工具（始终可用）
+        self.base_tools = [execute_bash, get_bash_tool_detailed_usage]
+        
+        # 创建支持工具调用的Agent（使用基础工具）
+        self.agent = create_react_agent(self.llm, self.base_tools)
+        
+        # 缓存 Web 搜索工具
+        self._web_search_tool = None
 
         # 存储每个会话的取消状态
         # key: session_id, value: 是否已取消
         self._cancel_flags: Dict[str, bool] = {}
+        
+        # 存储每个会话的 Agent（根据工具配置动态创建）
+        # key: session_id, value: agent
+        self._session_agents: Dict[str, Any] = {}
+    
+    def _get_tools_for_session(self, session_id: str) -> List:
+        """
+        获取会话可用的工具列表
+        
+        根据会话的联网搜索设置，动态返回可用的工具
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            工具列表
+        """
+        tools = list(self.base_tools)  # 复制基础工具
+        
+        # 检查会话是否启用联网搜索
+        web_search_enabled = session_store.get_web_search_enabled(session_id)
+        
+        if web_search_enabled:
+            # 懒加载 Web 搜索工具
+            if self._web_search_tool is None:
+                self._web_search_tool = get_web_search_tool()
+            
+            if self._web_search_tool:
+                tools.append(self._web_search_tool)
+        
+        return tools
+    
+    def _get_agent_for_session(self, session_id: str) -> Any:
+        """
+        获取或创建会话的 Agent
+        
+        根据会话的工具配置，返回对应的 Agent
+        如果工具配置发生变化，会重新创建 Agent
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            Agent 实例
+        """
+        tools = self._get_tools_for_session(session_id)
+        
+        # 使用工具列表的长度和类型作为缓存键
+        # 这样可以在工具变化时自动创建新的 Agent
+        cache_key = f"{session_id}_{len(tools)}_{[t.name for t in tools]}"
+        
+        # 简单起见，每次都检查工具配置是否变化
+        # 如果性能有问题，可以优化缓存策略
+        current_tools = self._get_tools_for_session(session_id)
+        
+        # 直接创建新的 Agent（确保工具配置正确）
+        return create_react_agent(self.llm, current_tools)
 
     # ==================== 会话管理 ====================
 
@@ -137,8 +202,11 @@ class ChatService:
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input)
 
+            # 获取会话特定的 Agent（根据联网搜索设置动态创建）
+            agent = self._get_agent_for_session(session_id)
+            
             # 使用Agent处理
-            result = self.agent.invoke({"messages": messages})
+            result = agent.invoke({"messages": messages})
 
             # 提取最终输出
             output = self._extract_ai_message(result)
@@ -219,11 +287,14 @@ class ChatService:
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input)
 
+            # 获取会话特定的 Agent（根据联网搜索设置动态创建）
+            agent = self._get_agent_for_session(session_id)
+            
             # 收集完整响应
             full_response = ""
 
             # 使用多种 stream_mode
-            for chunk in self.agent.stream(
+            for chunk in agent.stream(
                     {"messages": messages},
                     stream_mode=["messages", "updates"]
             ):
@@ -288,7 +359,9 @@ class ChatService:
 
             # 如果没有获取到内容，使用 invoke 作为备用
             if not full_response:
-                result = self.agent.invoke({"messages": messages})
+                # 获取会话特定的 Agent
+                agent = self._get_agent_for_session(session_id)
+                result = agent.invoke({"messages": messages})
                 full_response = self._extract_ai_message(result)
 
                 # 检查是否需要确认
@@ -387,7 +460,9 @@ class ChatService:
                 
                 # 使用 Agent 处理，支持多步骤工具调用
                 messages = self._build_messages_for_cancel(chat_history, exec_context)
-                agent_result = self.agent.invoke({"messages": messages})
+                # 获取会话特定的 Agent
+                agent = self._get_agent_for_session(session_id)
+                agent_result = agent.invoke({"messages": messages})
                 output = self._extract_ai_message(agent_result)
 
                 # 检查是否需要确认下一个命令
@@ -537,7 +612,10 @@ class ChatService:
                 messages = self._build_messages_for_cancel(chat_history, cancel_context)
                 full_response = ""
 
-                for chunk in self.agent.stream(
+                # 获取会话特定的 Agent
+                agent = self._get_agent_for_session(session_id)
+
+                for chunk in agent.stream(
                         {"messages": messages},
                         stream_mode=["messages", "updates"]
                 ):
@@ -610,6 +688,30 @@ class ChatService:
         """清除取消标志"""
         if session_id in self._cancel_flags:
             del self._cancel_flags[session_id]
+    
+    # ==================== 联网搜索设置 ====================
+    
+    def get_web_search_status(self, session_id: str) -> bool:
+        """
+        获取会话的联网搜索状态
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            是否启用联网搜索
+        """
+        return session_store.get_web_search_enabled(session_id)
+    
+    def set_web_search_enabled(self, session_id: str, enabled: bool) -> None:
+        """
+        设置会话的联网搜索开关
+        
+        Args:
+            session_id: 会话ID
+            enabled: 是否启用联网搜索
+        """
+        session_store.set_web_search_enabled(session_id, enabled)
 
     # ==================== 私有方法 ====================
 
@@ -715,7 +817,10 @@ class ChatService:
         full_response = ""
         messages = self._build_messages_for_cancel(chat_history, context_message)
         
-        for chunk in self.agent.stream(
+        # 获取会话特定的 Agent
+        agent = self._get_agent_for_session(session_id)
+        
+        for chunk in agent.stream(
                 {"messages": messages},
                 stream_mode=["messages", "updates"]
         ):

@@ -194,6 +194,63 @@ def get_session_detail(session_id: str):
         }), 500
 
 
+# ==================== 联网搜索设置 API ====================
+
+@app.route('/web-search/status', methods=['GET'])
+def get_web_search_status():
+    """
+    获取当前会话的联网搜索状态
+    
+    返回：
+    - enabled: 是否启用联网搜索
+    - session_id: 当前会话ID
+    """
+    try:
+        session_id = get_session_id()
+        enabled = chat_service.get_web_search_status(session_id)
+        
+        return jsonify({
+            'enabled': enabled,
+            'session_id': session_id
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取联网搜索状态失败: {str(e)}'
+        }), 500
+
+
+@app.route('/web-search/toggle', methods=['POST'])
+def toggle_web_search():
+    """
+    切换联网搜索开关
+    
+    请求体：
+    - enabled: 是否启用联网搜索（boolean）
+    
+    返回：
+    - enabled: 新的状态
+    - session_id: 当前会话ID
+    """
+    try:
+        data = request.json
+        enabled = data.get('enabled', False)
+        
+        session_id = get_session_id()
+        
+        # 设置联网搜索状态
+        chat_service.set_web_search_enabled(session_id, enabled)
+        
+        return jsonify({
+            'enabled': enabled,
+            'session_id': session_id,
+            'message': f'联网搜索已{"开启" if enabled else "关闭"}'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'切换联网搜索失败: {str(e)}'
+        }), 500
+
+
 # ==================== 对话 API ====================
 
 @app.route('/chat', methods=['POST'])
