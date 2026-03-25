@@ -247,6 +247,32 @@ def get_command_type(command: str) -> Tuple[str, str, str]:
 
 # ==================== 命令执行 ====================
 
+def expand_tilde_in_tokens(tokens: List[str]) -> List[str]:
+    """
+    展开命令参数中的 ~ 符号为用户主目录
+    
+    Args:
+        tokens: 解析后的命令参数列表
+        
+    Returns:
+        展开后的参数列表
+    """
+    home_dir = os.path.expanduser("~")
+    expanded_tokens = []
+    
+    for token in tokens:
+        if token.startswith("~/"):
+            # 展开 ~/path 格式
+            expanded_tokens.append(token.replace("~", home_dir, 1))
+        elif token == "~":
+            # 单独的 ~ 展开
+            expanded_tokens.append(home_dir)
+        else:
+            expanded_tokens.append(token)
+    
+    return expanded_tokens
+
+
 def execute_bash_direct(command: str) -> str:
     """
     安全执行bash命令（增强版）
@@ -255,6 +281,7 @@ def execute_bash_direct(command: str) -> str:
     1. 使用 shlex 正确解析命令
     2. 使用 shell=False 防止 shell 注入
     3. 更完善的错误处理
+    4. 自动展开 ~ 符号为用户主目录
     
     Args:
         command: 要执行的bash命令
@@ -286,6 +313,7 @@ def execute_bash_direct(command: str) -> str:
         
         if needs_shell:
             # 复杂命令需要 shell，但已经过安全检测
+            # 在 shell 执行时，~ 会被 shell 自动展开
             result = subprocess.run(
                 command,
                 shell=True,
@@ -296,6 +324,8 @@ def execute_bash_direct(command: str) -> str:
             )
         else:
             # 简单命令直接执行，不经过 shell（更安全）
+            # 需要手动展开 ~ 符号
+            tokens = expand_tilde_in_tokens(tokens)
             result = subprocess.run(
                 tokens,
                 shell=False,
