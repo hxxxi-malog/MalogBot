@@ -121,7 +121,8 @@ class SessionStore:
                 'session_id': sess.session_id,
                 'created_at': sess.created_at.isoformat() if sess.created_at else None,
                 'updated_at': sess.updated_at.isoformat() if sess.updated_at else None,
-                'message_count': msg_count
+                'message_count': msg_count,
+                'web_search_enabled': sess.web_search_enabled if sess.web_search_enabled is not None else False
             }
     
     # ==================== 消息历史 ====================
@@ -241,6 +242,46 @@ class SessionStore:
         """
         with db_manager.get_session() as session:
             return session.query(Message).filter_by(session_id=session_id).count()
+    
+    # ==================== 联网搜索设置 ====================
+    
+    def get_web_search_enabled(self, session_id: str) -> bool:
+        """
+        获取会话的联网搜索开关状态
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            是否启用联网搜索，默认为 False
+        """
+        with db_manager.get_session() as session:
+            sess = session.query(Session).filter_by(session_id=session_id).first()
+            if not sess:
+                return False
+            return sess.web_search_enabled if sess.web_search_enabled is not None else False
+    
+    def set_web_search_enabled(self, session_id: str, enabled: bool) -> bool:
+        """
+        设置会话的联网搜索开关状态
+        
+        Args:
+            session_id: 会话ID
+            enabled: 是否启用联网搜索
+            
+        Returns:
+            是否设置成功
+        """
+        with db_manager.get_session() as session:
+            # 确保会话存在
+            self.get_or_create_session(session_id)
+            
+            # 更新设置
+            sess = session.query(Session).filter_by(session_id=session_id).first()
+            if sess:
+                sess.web_search_enabled = enabled
+                return True
+            return False
 
 
 # 创建全局实例
