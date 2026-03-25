@@ -5,7 +5,7 @@ Flask应用主入口
 - 支持流式和非流式输出
 - 支持工具调用
 - 支持命令确认机制（所有执行类命令需要用户确认）
-- 支持会话管理
+- 支持会话管理（创建、删除、切换）
 """
 import uuid
 import json
@@ -35,6 +35,166 @@ def index():
     """主页"""
     return render_template('index.html')
 
+
+# ==================== 会话管理 API ====================
+
+@app.route('/sessions', methods=['GET'])
+def get_sessions():
+    """
+    获取所有会话列表
+    
+    返回：
+    - sessions: 会话列表
+    - current_session_id: 当前会话ID（Flask session中存储的ID）
+    """
+    try:
+        # 获取当前 Flask session 中的 session_id（不自动创建）
+        current_session_id = session.get('session_id', None)
+        
+        sessions = chat_service.get_all_sessions()
+        
+        return jsonify({
+            'sessions': sessions,
+            'current_session_id': current_session_id
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取会话列表失败: {str(e)}'
+        }), 500
+
+
+@app.route('/sessions/new', methods=['POST'])
+def new_session():
+    """
+    创建新会话
+    
+    返回：
+    - session_id: 新会话的ID
+    """
+    try:
+        # 创建新会话
+        new_session_id = chat_service.create_session()
+        
+        # 切换到新会话
+        session['session_id'] = new_session_id
+        
+        return jsonify({
+            'status': 'ok',
+            'session_id': new_session_id,
+            'message': '新会话已创建'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'创建会话失败: {str(e)}'
+        }), 500
+
+
+@app.route('/sessions/<session_id>', methods=['DELETE'])
+def delete_session(session_id: str):
+    """
+    删除会话
+    
+    Args:
+        session_id: 要删除的会话ID
+        
+    返回：
+    - status: 操作状态
+    """
+    try:
+        # 不允许删除当前会话，需要先切换
+        current_session_id = get_session_id()
+        if session_id == current_session_id:
+            return jsonify({
+                'error': '无法删除当前会话，请先切换到其他会话'
+            }), 400
+        
+        # 删除会话
+        success = chat_service.delete_session(session_id)
+        
+        if success:
+            return jsonify({
+                'status': 'ok',
+                'message': '会话已删除'
+            })
+        else:
+            return jsonify({
+                'error': '会话不存在'
+            }), 404
+    except Exception as e:
+        return jsonify({
+            'error': f'删除会话失败: {str(e)}'
+        }), 500
+
+
+@app.route('/sessions/<session_id>/switch', methods=['POST'])
+def switch_session(session_id: str):
+    """
+    切换到指定会话
+    
+    Args:
+        session_id: 目标会话ID
+        
+    返回：
+    - status: 操作状态
+    - session_id: 当前会话ID
+    """
+    try:
+        # 确保会话存在
+        session_info = chat_service.get_session_info(session_id)
+        
+        if not session_info:
+            # 如果会话不存在，创建一个新的
+            chat_service.create_session()
+            # 使用传入的 session_id
+            session['session_id'] = session_id
+        else:
+            # 切换到已存在的会话
+            session['session_id'] = session_id
+        
+        return jsonify({
+            'status': 'ok',
+            'session_id': session_id,
+            'session_info': session_info
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'切换会话失败: {str(e)}'
+        }), 500
+
+
+@app.route('/sessions/<session_id>/info', methods=['GET'])
+def get_session_detail(session_id: str):
+    """
+    获取会话详情
+    
+    Args:
+        session_id: 会话ID
+        
+    返回：
+    - session_info: 会话信息
+    - messages: 消息历史
+    """
+    try:
+        session_info = chat_service.get_session_info(session_id)
+        
+        if not session_info:
+            return jsonify({
+                'error': '会话不存在'
+            }), 404
+        
+        messages = chat_service.get_history(session_id)
+        
+        return jsonify({
+            'session_info': session_info,
+            'messages': messages
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取会话详情失败: {str(e)}'
+        }), 500
+
+
+# ==================== 对话 API ====================
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -266,12 +426,18 @@ def stop_generation():
 
 @app.route('/reset', methods=['POST'])
 def reset():
-    """重置对话"""
+    """
+    重置当前会话（清空消息历史）
+    
+    注意：这不会删除会话，只是清空消息历史
+    """
     session_id = get_session_id()
     chat_service.clear_history(session_id)
-    session.clear()
 
-    return jsonify({'status': 'ok'})
+    return jsonify({
+        'status': 'ok',
+        'message': '会话历史已清空'
+    })
 
 
 if __name__ == '__main__':

@@ -5,25 +5,28 @@
 1. 流式输出（token-by-token）
 2. 工具调用（Bash执行）
 3. 命令确认机制（所有执行类命令需要用户确认）
-4. 会话历史管理
+4. 会话历史管理（数据库持久化）
 """
 import json
+import uuid
 from typing import Generator, Dict, Any, Optional, List
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 from agent.llm import get_llm
+from agent.prompts import SYSTEM_PROMPT
 from agent.tools.bash import (
     execute_bash,
     execute_confirmed_bash,
-    execute_cancelled_bash,
     CONFIRMATION_REQUIRED_MARKER
 )
+from services.context_manager import context_manager
+from services.session_store import session_store
 
 
 class ChatService:
-    """统一的对话服务类"""
+    """统一的对话服务类（使用数据库存储会话）"""
 
     def __init__(self):
         """初始化对话服务"""
@@ -34,13 +37,69 @@ class ChatService:
         # 创建支持工具调用的Agent
         self.agent = create_react_agent(self.llm, self.tools)
 
-        # MVP阶段：使用内存存储对话历史
-        # key: session_id, value: 消息列表
-        self._sessions: Dict[str, List[Dict]] = {}
-        
         # 存储每个会话的取消状态
         # key: session_id, value: 是否已取消
         self._cancel_flags: Dict[str, bool] = {}
+
+    # ==================== 会话管理 ====================
+
+    def create_session(self) -> str:
+        """
+        创建新会话
+        
+        Returns:
+            新会话的ID
+        """
+        session_id = str(uuid.uuid4())
+        session_store.get_or_create_session(session_id)
+        return session_id
+
+    def ensure_session_exists(self, session_id: str) -> bool:
+        """
+        确保会话存在于数据库中
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            是否成功
+        """
+        return session_store.get_or_create_session(session_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        """
+        删除会话及其所有消息
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            是否删除成功
+        """
+        return session_store.delete_session(session_id)
+
+    def get_all_sessions(self) -> List[Dict]:
+        """
+        获取所有会话列表
+        
+        Returns:
+            会话列表，每个包含 session_id, created_at, updated_at, message_count
+        """
+        return session_store.get_all_sessions()
+
+    def get_session_info(self, session_id: str) -> Optional[Dict]:
+        """
+        获取会话信息
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            会话信息字典，不存在则返回None
+        """
+        return session_store.get_session_info(session_id)
+
+    # ==================== 对话功能 ====================
 
     def chat(
             self,
@@ -62,11 +121,17 @@ class ChatService:
             - operation: 操作类型
             - working_dir: 执行路径
         """
-        # 获取或创建会话历史
-        if session_id not in self._sessions:
-            self._sessions[session_id] = []
-
-        chat_history = self._sessions[session_id]
+        # 获取会话历史
+        chat_history = self._get_chat_history(session_id)
+        
+        # 检查是否需要压缩上下文
+        if context_manager.should_compress(chat_history):
+            chat_history = context_manager.compress_history(
+                chat_history, 
+                llm_client=self.llm
+            )
+            # 数据库模式下，压缩后需要更新数据库
+            self._compress_history_in_db(session_id, chat_history)
 
         try:
             # 构建消息列表
@@ -83,7 +148,7 @@ class ChatService:
 
             if confirmation_info:
                 # 保存用户消息到历史，以便确认后继续处理
-                chat_history.append({"role": "user", "content": user_input})
+                self._save_message(session_id, "user", user_input)
                 return {
                     "type": "confirmation_required",
                     "command": confirmation_info["command"],
@@ -97,8 +162,8 @@ class ChatService:
                 }
 
             # 保存对话历史
-            chat_history.append({"role": "user", "content": user_input})
-            chat_history.append({"role": "assistant", "content": output})
+            self._save_message(session_id, "user", user_input)
+            self._save_message(session_id, "assistant", output)
 
             return {
                 "type": "response",
@@ -138,11 +203,17 @@ class ChatService:
         # 清除之前的取消标志
         self.clear_cancel_flag(session_id)
         
-        # 获取或创建会话历史
-        if session_id not in self._sessions:
-            self._sessions[session_id] = []
-
-        chat_history = self._sessions[session_id]
+        # 获取会话历史
+        chat_history = self._get_chat_history(session_id)
+        
+        # 检查是否需要压缩上下文
+        if context_manager.should_compress(chat_history):
+            chat_history = context_manager.compress_history(
+                chat_history, 
+                llm_client=self.llm
+            )
+            # 数据库模式下，压缩后需要更新数据库
+            self._compress_history_in_db(session_id, chat_history)
 
         try:
             # 构建消息列表
@@ -160,8 +231,8 @@ class ChatService:
                 if self.is_cancelled(session_id):
                     # 保存已输出的部分到历史
                     if full_response:
-                        chat_history.append({"role": "user", "content": user_input})
-                        chat_history.append({"role": "assistant", "content": full_response})
+                        self._save_message(session_id, "user", user_input)
+                        self._save_message(session_id, "assistant", full_response)
                     yield {
                         "type": "cancelled",
                         "content": full_response
@@ -202,7 +273,7 @@ class ChatService:
                                     confirmation_info = self._extract_confirmation_required(str(msg.content))
                                     if confirmation_info:
                                         # 保存用户消息到历史，以便确认后继续处理
-                                        chat_history.append({"role": "user", "content": user_input})
+                                        self._save_message(session_id, "user", user_input)
                                         yield {
                                             "type": "confirmation_required",
                                             "command": confirmation_info["command"],
@@ -224,7 +295,7 @@ class ChatService:
                 confirmation_info = self._extract_confirmation_required(full_response)
                 if confirmation_info:
                     # 保存用户消息到历史，以便确认后继续处理
-                    chat_history.append({"role": "user", "content": user_input})
+                    self._save_message(session_id, "user", user_input)
                     yield {
                         "type": "confirmation_required",
                         "command": confirmation_info["command"],
@@ -253,7 +324,7 @@ class ChatService:
                 confirmation_info = self._extract_confirmation_required(full_response)
                 if confirmation_info:
                     # 保存用户消息到历史，以便确认后继续处理
-                    chat_history.append({"role": "user", "content": user_input})
+                    self._save_message(session_id, "user", user_input)
                     yield {
                         "type": "confirmation_required",
                         "command": confirmation_info["command"],
@@ -267,8 +338,8 @@ class ChatService:
                     return
 
             # 保存对话历史
-            chat_history.append({"role": "user", "content": user_input})
-            chat_history.append({"role": "assistant", "content": full_response})
+            self._save_message(session_id, "user", user_input)
+            self._save_message(session_id, "assistant", full_response)
 
             # 发送完成信号
             yield {
@@ -308,11 +379,11 @@ class ChatService:
 
             # 如果有用户消息，继续对话
             if user_message:
-                chat_history = self._sessions.get(session_id, [])
+                chat_history = self._get_chat_history(session_id)
                 
                 # 构建上下文消息，告诉 LLM 命令执行结果并提醒继续处理
                 # 注意：用户消息已经在 chat 方法中保存到历史了，这里不需要重复保存
-                exec_context = f"✅ 上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
+                exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
                 
                 # 使用 Agent 处理，支持多步骤工具调用
                 messages = self._build_messages_for_cancel(chat_history, exec_context)
@@ -336,7 +407,7 @@ class ChatService:
 
                 # 保存助手响应到历史（用户消息已经在 chat 方法中保存了）
                 if output:
-                    chat_history.append({"role": "assistant", "content": output})
+                    self._save_message(session_id, "assistant", output)
 
                 return {
                     "type": "response",
@@ -386,16 +457,16 @@ class ChatService:
 
             yield {
                 "type": "tool_result",
-                "content": f"✅ 命令已执行: `{command}`\n\n**结果:**\n```\n{result}\n```"
+                "content": f"命令已执行: `{command}`\n\n**结果:**\n```\n{result}\n```"
             }
 
             # 如果有用户消息，继续对话
             if user_message:
-                chat_history = self._sessions.get(session_id, [])
+                chat_history = self._get_chat_history(session_id)
                 
                 # 构建上下文消息，告诉 LLM 命令执行结果并提醒继续处理
                 # 注意：用户消息已经在 chat_stream 中保存到历史了，这里不需要重复保存
-                exec_context = f"✅ 上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
+                exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求，执行剩余的步骤。如果还有未完成的任务，请继续执行。"
                 
                 # 使用循环支持多步骤工具调用
                 full_response = ""
@@ -416,12 +487,7 @@ class ChatService:
                 
                 # 保存助手响应到历史（用户消息已经在 chat_stream 中保存了）
                 if full_response:
-                    # 移除之前添加的用户消息（如果有重复），然后添加助手响应
-                    # 注意：由于我们在 chat_stream 中已经添加了用户消息，
-                    # 而在 _execute_agent_loop 中又把 exec_context 作为新用户消息传入了，
-                    # 所以这里需要正确处理历史
-                    # 实际上，我们不应该在这里添加用户消息，只添加助手响应
-                    chat_history.append({"role": "assistant", "content": full_response})
+                    self._save_message(session_id, "assistant", full_response)
                 
                 yield {
                     "type": "done",
@@ -460,7 +526,7 @@ class ChatService:
         self.clear_cancel_flag(session_id)
         
         try:
-            chat_history = self._sessions.get(session_id, [])
+            chat_history = self._get_chat_history(session_id)
 
             # 如果有用户消息，让 LLM 继续处理
             # 注意：不再使用 tool 角色消息，而是构建一个新的用户消息告诉 LLM 取消情况
@@ -478,8 +544,8 @@ class ChatService:
                     # 检查是否被取消
                     if self.is_cancelled(session_id):
                         if full_response:
-                            chat_history.append({"role": "user", "content": user_message})
-                            chat_history.append({"role": "assistant", "content": full_response})
+                            self._save_message(session_id, "user", user_message)
+                            self._save_message(session_id, "assistant", full_response)
                         yield {
                             "type": "cancelled",
                             "content": full_response
@@ -504,8 +570,8 @@ class ChatService:
 
                 if full_response:
                     # 保存原始用户消息和取消后的响应
-                    chat_history.append({"role": "user", "content": user_message})
-                    chat_history.append({"role": "assistant", "content": full_response})
+                    self._save_message(session_id, "user", user_message)
+                    self._save_message(session_id, "assistant", full_response)
 
                 yield {
                     "type": "done",
@@ -526,12 +592,11 @@ class ChatService:
 
     def get_history(self, session_id: str = "default") -> List[Dict]:
         """获取对话历史"""
-        return self._sessions.get(session_id, [])
+        return self._get_chat_history(session_id)
 
     def clear_history(self, session_id: str = "default") -> None:
         """清空对话历史"""
-        if session_id in self._sessions:
-            del self._sessions[session_id]
+        session_store.clear_messages(session_id)
     
     def request_cancel(self, session_id: str = "default") -> None:
         """请求取消当前会话的流式输出"""
@@ -547,6 +612,39 @@ class ChatService:
             del self._cancel_flags[session_id]
 
     # ==================== 私有方法 ====================
+
+    def _get_chat_history(self, session_id: str) -> List[Dict]:
+        """
+        获取会话历史（从数据库）
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            消息列表
+        """
+        return session_store.get_messages(session_id, limit=100)
+    
+    def _save_message(self, session_id: str, role: str, content: str):
+        """
+        保存消息到数据库
+        
+        Args:
+            session_id: 会话ID
+            role: 角色
+            content: 消息内容
+        """
+        session_store.add_message(session_id, role, content)
+
+    def _compress_history_in_db(self, session_id: str, compressed_history: List[Dict]):
+        """
+        在数据库中压缩历史记录
+        
+        Args:
+            session_id: 会话ID
+            compressed_history: 压缩后的历史记录
+        """
+        session_store.replace_messages(session_id, compressed_history)
 
     def _build_messages(
             self,
@@ -565,6 +663,9 @@ class ChatService:
         """
         messages = []
 
+        # 添加系统提示（始终在第一位）
+        messages.append(SystemMessage(content=SYSTEM_PROMPT))
+
         # 添加历史消息
         for msg in chat_history:
             role = msg.get("role")
@@ -575,7 +676,8 @@ class ChatService:
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
             elif role == "system":
-                messages.append(SystemMessage(content=content))
+                # 系统消息已经处理过了，跳过
+                pass
             # 注意：不再处理 tool 角色，因为它需要前置的 tool_calls
 
         # 添加当前用户消息
@@ -686,6 +788,9 @@ class ChatService:
         """
         messages = []
 
+        # 添加系统提示（始终在第一位）
+        messages.append(SystemMessage(content=SYSTEM_PROMPT))
+
         # 添加历史消息（只包含 user 和 assistant）
         for msg in chat_history:
             role = msg.get("role")
@@ -696,7 +801,8 @@ class ChatService:
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
             elif role == "system":
-                messages.append(SystemMessage(content=content))
+                # 系统消息已经处理过了，跳过
+                pass
 
         # 添加取消上下文作为新的用户消息
         messages.append(HumanMessage(content=cancel_context))

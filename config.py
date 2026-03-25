@@ -17,10 +17,11 @@ class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
 
-    # 数据库配置
+    # 数据库配置（Docker PostgreSQL）
+    # 注意：使用5433端口避免与本地PostgreSQL冲突
     DATABASE_URL = os.getenv(
         'DATABASE_URL',
-        'postgresql://postgres:postgres@localhost:5432/malogbot'
+        'postgresql://malog:2153315236@127.0.0.1:5433/malogbot'
     )
 
     # LLM配置
