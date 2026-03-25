@@ -31,6 +31,9 @@ class Config:
 
     # 工具配置
     BASH_TIMEOUT = int(os.getenv('BASH_TIMEOUT', '30'))  # 命令超时时间（秒）
+    
+    # Agent 配置
+    AGENT_RECURSION_LIMIT = int(os.getenv('AGENT_RECURSION_LIMIT', '25'))  # Agent 递归限制
 
     # LangSmith 可视化追踪配置
     LANGCHAIN_TRACING_V2 = os.getenv('LANGCHAIN_TRACING_V2', 'false').lower() == 'true'

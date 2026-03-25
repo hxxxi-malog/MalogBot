@@ -664,6 +664,110 @@
             display: none;
         }
 
+        /* 递归限制确认卡片样式 */
+        .recursion-limit-card {
+            margin-top: 12px;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            overflow: hidden;
+            font-size: 13px;
+            background: #fffbeb;
+        }
+
+        .recursion-limit-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: #fef3c7;
+            border-bottom: 1px solid #fcd34d;
+        }
+
+        .recursion-limit-warning {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #92400e;
+            font-weight: 500;
+        }
+
+        .recursion-limit-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .recursion-limit-btn {
+            padding: 6px 16px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .recursion-limit-btn.stop {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .recursion-limit-btn.stop:hover {
+            background: #e5e7eb;
+        }
+
+        .recursion-limit-btn.continue {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .recursion-limit-btn.continue:hover {
+            background: #d97706;
+        }
+
+        .recursion-limit-body {
+            padding: 12px;
+        }
+
+        .recursion-limit-message {
+            color: #78350f;
+            line-height: 1.5;
+        }
+
+        .recursion-limit-partial {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #666;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        /* 执行中状态 */
+        .recursion-limit-card.executing {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        /* 已处理状态 */
+        .recursion-limit-card.stopped .recursion-limit-actions::before {
+            content: '⏹️ 已停止';
+            font-size: 12px;
+            color: #dc2626;
+        }
+
+        .recursion-limit-card.continued .recursion-limit-actions::before {
+            content: '▶️ 继续执行中...';
+            font-size: 12px;
+            color: #16a34a;
+        }
+
+        .recursion-limit-card.stopped .recursion-limit-btn,
+        .recursion-limit-card.continued .recursion-limit-btn {
+            display: none;
+        }
+
         /* 空状态提示 */
         .empty-state {
             text-align: center;
@@ -1169,7 +1273,7 @@
         }
 
         // 流式读取并处理响应的通用函数
-        async function streamReader(reader, messageElement, onDone) {
+        async function streamReader(reader, messageElement, onDone, handleRecursionLimit = false) {
             const decoder = new TextDecoder();
             let assistantMessage = '';
 
@@ -1211,6 +1315,15 @@
                                     // 需要用户确认命令
                                     // 使用保存的原始用户消息，而不是助手响应
                                     appendConfirmCard(messageElement, data, currentOriginalUserMessage);
+                                    hideStopButton();
+                                    sendButton.disabled = false;
+                                    return;
+                                } else if (data.type === 'recursion_limit_reached') {
+                                    // 达到递归限制
+                                    if (assistantMessage) {
+                                        updateMessage(messageElement, assistantMessage);
+                                    }
+                                    appendRecursionLimitCard(messageElement, data);
                                     hideStopButton();
                                     sendButton.disabled = false;
                                     return;
@@ -1401,6 +1514,120 @@
             }
         }
 
+        // ==================== 递归限制处理 ====================
+
+        function createRecursionLimitCard(data) {
+            const card = document.createElement('div');
+            card.className = 'recursion-limit-card';
+            
+            let partialOutputHtml = '';
+            if (data.partial_output) {
+                partialOutputHtml = `<div class="recursion-limit-partial">${escapeHtml(data.partial_output.substring(0, 500))}${data.partial_output.length > 500 ? '...' : ''}</div>`;
+            }
+
+            card.innerHTML = `
+                <div class="recursion-limit-header">
+                    <div class="recursion-limit-warning">
+                        <span>⚠️</span>
+                        <span>执行步数限制</span>
+                    </div>
+                    <div class="recursion-limit-actions">
+                        <button class="recursion-limit-btn stop">停止</button>
+                        <button class="recursion-limit-btn continue">继续执行</button>
+                    </div>
+                </div>
+                <div class="recursion-limit-body">
+                    <div class="recursion-limit-message">
+                        ${escapeHtml(data.message || '已达到最大执行步数限制。任务可能还未完成，是否继续执行？')}
+                    </div>
+                    ${partialOutputHtml}
+                </div>
+            `;
+
+            const stopBtn = card.querySelector('.recursion-limit-btn.stop');
+            const continueBtn = card.querySelector('.recursion-limit-btn.continue');
+
+            stopBtn.addEventListener('click', () => handleRecursionStop(card));
+            continueBtn.addEventListener('click', () => handleRecursionContinue(card));
+
+            return card;
+        }
+
+        function appendRecursionLimitCard(messageElement, data) {
+            // 移除已有的递归限制卡片
+            const existingCard = messageElement.querySelector('.recursion-limit-card:not(.stopped):not(.continued)');
+            if (existingCard) {
+                existingCard.remove();
+            }
+
+            const card = createRecursionLimitCard(data);
+            messageElement.appendChild(card);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        async function handleRecursionStop(card) {
+            // 标记为已停止
+            card.classList.add('stopped');
+            
+            // 添加提示信息
+            const infoDiv = document.createElement('div');
+            infoDiv.style.cssText = 'margin-top: 8px; padding: 8px; background: #fee2e2; border-radius: 4px; font-size: 12px; color: #991b1b;';
+            infoDiv.textContent = '⏹️ 任务执行已停止。如需继续，请发送新的消息。';
+            card.appendChild(infoDiv);
+            
+            sendButton.disabled = false;
+            messageInput.focus();
+        }
+
+        async function handleRecursionContinue(card) {
+            // 更新卡片状态
+            card.classList.add('executing');
+            card.querySelector('.recursion-limit-btn.continue').textContent = '继续中...';
+
+            // 创建新的消息用于显示后续输出
+            const newMessageElement = addMessage('', 'assistant');
+            
+            // 创建新的 AbortController 并显示停止按钮
+            currentAbortController = new AbortController();
+            showStopButton();
+
+            try {
+                const response = await fetch('/continue/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    signal: currentAbortController.signal
+                });
+
+                const reader = response.body.getReader();
+                
+                // 标记卡片为已继续
+                card.classList.remove('executing');
+                card.classList.add('continued');
+
+                await streamReader(reader, newMessageElement, () => {
+                    hideStopButton();
+                    sendButton.disabled = false;
+                    currentAbortController = null;
+                    messageInput.focus();
+                    loadSessions(); // 刷新会话列表
+                }, true); // 传入 true 表示需要处理递归限制
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('Continue request aborted by user');
+                } else {
+                    console.error('Continue error:', error);
+                    updateMessage(newMessageElement, '❌ 继续执行失败: ' + error.message);
+                }
+                hideStopButton();
+                sendButton.disabled = false;
+                currentAbortController = null;
+                messageInput.focus();
+            }
+        }
+
         // 发送消息的核心函数
         async function sendMessageWithInput(content, isNewSession = false) {
             if (!content) return;
@@ -1493,6 +1720,20 @@
                                     
                                     // 追加内联确认卡片
                                     appendConfirmCard(messageElement, data, content);
+                                    hideStopButton();
+                                    sendButton.disabled = false;
+                                    return;
+                                    
+                                } else if (data.type === 'recursion_limit_reached') {
+                                    // 达到递归限制
+                                    typingIndicator.classList.remove('show');
+                                    
+                                    if (!messageElement) {
+                                        messageElement = addMessage('', 'assistant');
+                                    }
+                                    
+                                    // 追加递归限制确认卡片
+                                    appendRecursionLimitCard(messageElement, data);
                                     hideStopButton();
                                     sendButton.disabled = false;
                                     return;

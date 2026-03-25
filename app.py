@@ -497,5 +497,72 @@ def reset():
     })
 
 
+# ==================== 递归限制继续执行 API ====================
+
+@app.route('/continue', methods=['POST'])
+def continue_task():
+    """
+    继续执行因递归限制暂停的任务（非流式）
+    
+    当任务执行达到步数限制时，用户可以选择继续执行。
+    这将重置计数器并继续之前的任务。
+    
+    返回：
+    - type: "response" | "recursion_limit_reached" | "error"
+    - output: 助手回复
+    """
+    try:
+        session_id = get_session_id()
+        result = chat_service.continue_task(session_id)
+        
+        if result['type'] == 'confirmation_required':
+            return jsonify({
+                'type': 'confirmation_required',
+                'command': result['command'],
+                'command_type': result.get('command_type', 'execute'),
+                'operation': result.get('operation', '执行命令'),
+                'working_dir': result.get('working_dir', ''),
+                'is_dangerous': result.get('is_dangerous', False),
+                'reason': result.get('reason', ''),
+                'message': result.get('message', '需要用户确认'),
+                'session_id': result['session_id']
+            })
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({
+            'type': 'error',
+            'output': f'继续执行失败: {str(e)}'
+        }), 500
+
+
+@app.route('/continue/stream', methods=['POST'])
+def continue_task_stream():
+    """
+    继续执行因递归限制暂停的任务（流式）
+    
+    使用 Server-Sent Events (SSE) 返回流式数据
+    """
+    session_id = get_session_id()
+
+    def generate():
+        try:
+            for chunk in chat_service.continue_task_stream(session_id):
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'继续执行失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
+
+
 if __name__ == '__main__':
     app.run(debug=Config.DEBUG, port=5000)

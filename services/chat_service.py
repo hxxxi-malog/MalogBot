@@ -6,6 +6,7 @@
 2. 工具调用（Bash执行）
 3. 命令确认机制（所有执行类命令需要用户确认）
 4. 会话历史管理（数据库持久化）
+5. 递归限制处理（达到限制时让用户决定是否继续）
 """
 import json
 import uuid
@@ -13,6 +14,7 @@ from typing import Generator, Dict, Any, Optional, List
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
+from langgraph.errors import GraphRecursionError
 
 from agent.llm import get_llm
 from agent.prompts import SYSTEM_PROMPT
@@ -33,6 +35,10 @@ from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
 from config import Config
+
+
+# 递归限制确认标记
+RECURSION_LIMIT_MARKER = "__RECURSION_LIMIT_REACHED__"
 
 
 class ChatService:
@@ -65,6 +71,10 @@ class ChatService:
         # 存储每个会话的 Agent（根据工具配置动态创建）
         # key: session_id, value: agent
         self._session_agents: Dict[str, Any] = {}
+        
+        # 存储每个会话因递归限制中断时的状态（用于继续执行）
+        # key: session_id, value: {"messages": [...], "last_user_input": "..."}
+        self._recursion_pause_states: Dict[str, Dict[str, Any]] = {}
     
     def _get_tools_for_session(self, session_id: str) -> List:
         """
@@ -227,8 +237,11 @@ class ChatService:
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
             
-            # 使用Agent处理
-            result = agent.invoke({"messages": messages})
+            # 使用Agent处理（带递归限制配置）
+            result = agent.invoke(
+                {"messages": messages},
+                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+            )
 
             # 提取最终输出
             output = self._extract_ai_message(result)
@@ -261,6 +274,24 @@ class ChatService:
             return {
                 "type": "response",
                 "output": output,
+                "session_id": session_id
+            }
+
+        except GraphRecursionError:
+            # 达到递归限制，保存当前状态并请求用户确认
+            self._recursion_pause_states[session_id] = {
+                "chat_history": chat_history,
+                "user_input": user_input,
+                "last_output": None  # 无法获取部分输出
+            }
+            
+            # 保存用户消息到历史
+            self._save_message(session_id, "user", user_input)
+            
+            return {
+                "type": "recursion_limit_reached",
+                "message": f"已达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。任务可能还未完成。",
+                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
                 "session_id": session_id
             }
 
@@ -325,10 +356,11 @@ class ChatService:
             # 收集完整响应
             full_response = ""
 
-            # 使用多种 stream_mode
+            # 使用多种 stream_mode（带递归限制配置）
             for chunk in agent.stream(
                     {"messages": messages},
-                    stream_mode=["messages", "updates"]
+                    stream_mode=["messages", "updates"],
+                    config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
             ):
                 # 检查是否被取消
                 if self.is_cancelled(session_id):
@@ -453,6 +485,26 @@ class ChatService:
             yield {
                 "type": "done",
                 "content": full_response
+            }
+
+        except GraphRecursionError:
+            # 达到递归限制，保存当前状态并请求用户确认
+            self._recursion_pause_states[session_id] = {
+                "chat_history": chat_history,
+                "user_input": user_input,
+                "last_output": full_response if full_response else None
+            }
+            
+            # 保存用户消息和已有的输出到历史
+            self._save_message(session_id, "user", user_input)
+            if full_response:
+                self._save_message(session_id, "assistant", full_response)
+            
+            yield {
+                "type": "recursion_limit_reached",
+                "message": f"已达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。任务可能还未完成。",
+                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "partial_output": full_response
             }
 
         except Exception as e:
@@ -701,6 +753,247 @@ class ChatService:
             yield {
                 "type": "error",
                 "content": f"处理取消失败: {str(e)}"
+            }
+
+    # ==================== 递归限制继续执行 ====================
+
+    def continue_task(
+            self,
+            session_id: str = "default"
+    ) -> Dict[str, Any]:
+        """
+        继续执行因递归限制暂停的任务（非流式）
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            执行结果
+        """
+        # 获取暂停状态
+        pause_state = self._recursion_pause_states.pop(session_id, None)
+        
+        if not pause_state:
+            return {
+                "type": "error",
+                "output": "没有找到暂停的任务状态",
+                "session_id": session_id
+            }
+        
+        try:
+            # 设置当前会话ID
+            set_current_session(session_id)
+            
+            # 获取当前对话历史（已经包含了之前的消息）
+            chat_history = self._get_chat_history(session_id)
+            
+            # 构建继续执行的上下文消息
+            continue_context = (
+                f"任务执行已继续（之前达到了 {Config.AGENT_RECURSION_LIMIT} 步限制）。\n"
+                f"请继续完成之前的任务。如果任务已经完成，请总结结果。"
+            )
+            
+            # 检查任务提醒
+            todo_mgr = get_todo_manager(session_id)
+            reminder = todo_mgr.get_reminder_message()
+            
+            # 构建消息
+            messages = self._build_messages_for_cancel(chat_history, continue_context)
+            if reminder:
+                messages.insert(1, SystemMessage(content=reminder))
+            
+            # 获取 Agent
+            agent = self._get_agent_for_session(session_id)
+            
+            # 使用新的递归限制执行
+            result = agent.invoke(
+                {"messages": messages},
+                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+            )
+            
+            output = self._extract_ai_message(result)
+            
+            # 检查是否需要确认命令
+            confirmation_info = self._extract_confirmation_required(output)
+            if confirmation_info:
+                return {
+                    "type": "confirmation_required",
+                    "command": confirmation_info["command"],
+                    "command_type": confirmation_info.get("command_type", "execute"),
+                    "operation": confirmation_info.get("operation", "执行命令"),
+                    "working_dir": confirmation_info.get("working_dir", ""),
+                    "is_dangerous": confirmation_info.get("is_dangerous", False),
+                    "reason": confirmation_info.get("reason", ""),
+                    "message": confirmation_info.get("message", "需要用户确认"),
+                    "session_id": session_id
+                }
+            
+            # 保存输出
+            self._save_message(session_id, "assistant", output)
+            
+            return {
+                "type": "response",
+                "output": output,
+                "session_id": session_id
+            }
+            
+        except GraphRecursionError:
+            # 再次达到限制，保存状态并请求确认
+            self._recursion_pause_states[session_id] = {
+                "chat_history": self._get_chat_history(session_id),
+                "user_input": pause_state.get("user_input", ""),
+                "last_output": None
+            }
+            
+            return {
+                "type": "recursion_limit_reached",
+                "message": f"再次达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。是否继续执行？",
+                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "session_id": session_id
+            }
+            
+        except Exception as e:
+            return {
+                "type": "error",
+                "output": f"继续执行失败: {str(e)}",
+                "session_id": session_id
+            }
+
+    def continue_task_stream(
+            self,
+            session_id: str = "default"
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        继续执行因递归限制暂停的任务（流式）
+        
+        Args:
+            session_id: 会话ID
+            
+        Yields:
+            流式数据字典
+        """
+        # 清除取消标志
+        self.clear_cancel_flag(session_id)
+        
+        # 获取暂停状态
+        pause_state = self._recursion_pause_states.pop(session_id, None)
+        
+        if not pause_state:
+            yield {
+                "type": "error",
+                "content": "没有找到暂停的任务状态"
+            }
+            return
+        
+        try:
+            # 设置当前会话ID
+            set_current_session(session_id)
+            
+            # 获取当前对话历史
+            chat_history = self._get_chat_history(session_id)
+            
+            # 构建继续执行的上下文消息
+            continue_context = (
+                f"任务执行已继续（之前达到了 {Config.AGENT_RECURSION_LIMIT} 步限制）。\n"
+                f"请继续完成之前的任务。如果任务已经完成，请总结结果。"
+            )
+            
+            # 检查任务提醒
+            todo_mgr = get_todo_manager(session_id)
+            reminder = todo_mgr.get_reminder_message()
+            
+            # 构建消息
+            messages = self._build_messages_for_cancel(chat_history, continue_context)
+            if reminder:
+                messages.insert(1, SystemMessage(content=reminder))
+            
+            # 获取 Agent
+            agent = self._get_agent_for_session(session_id)
+            
+            full_response = ""
+            
+            # 流式执行
+            for chunk in agent.stream(
+                    {"messages": messages},
+                    stream_mode=["messages", "updates"],
+                    config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+            ):
+                # 检查是否被取消
+                if self.is_cancelled(session_id):
+                    if full_response:
+                        self._save_message(session_id, "assistant", full_response)
+                    yield {
+                        "type": "cancelled",
+                        "content": full_response
+                    }
+                    return
+                
+                if isinstance(chunk, tuple):
+                    mode, data = chunk
+                    
+                    if mode == "messages":
+                        if isinstance(data, tuple) and len(data) >= 1:
+                            message = data[0]
+                            if hasattr(message, "content") and message.content:
+                                token = str(message.content)
+                                if token:
+                                    full_response += token
+                                    yield {
+                                        "type": "content",
+                                        "content": token,
+                                        "accumulated": full_response
+                                    }
+                    
+                    elif mode == "updates":
+                        if isinstance(data, dict) and "tools" in data:
+                            tool_output = data["tools"].get("messages", [])
+                            for msg in tool_output:
+                                if hasattr(msg, "content"):
+                                    confirmation_info = self._extract_confirmation_required(str(msg.content))
+                                    if confirmation_info:
+                                        yield {
+                                            "type": "confirmation_required",
+                                            "command": confirmation_info["command"],
+                                            "command_type": confirmation_info.get("command_type", "execute"),
+                                            "operation": confirmation_info.get("operation", "执行命令"),
+                                            "working_dir": confirmation_info.get("working_dir", ""),
+                                            "is_dangerous": confirmation_info.get("is_dangerous", False),
+                                            "reason": confirmation_info.get("reason", ""),
+                                            "message": confirmation_info.get("message", "需要用户确认")
+                                        }
+                                        return
+            
+            # 保存输出
+            if full_response:
+                self._save_message(session_id, "assistant", full_response)
+            
+            yield {
+                "type": "done",
+                "content": full_response
+            }
+            
+        except GraphRecursionError:
+            # 再次达到限制
+            self._recursion_pause_states[session_id] = {
+                "chat_history": self._get_chat_history(session_id),
+                "user_input": pause_state.get("user_input", ""),
+                "last_output": full_response if full_response else None
+            }
+            
+            if full_response:
+                self._save_message(session_id, "assistant", full_response)
+            
+            yield {
+                "type": "recursion_limit_reached",
+                "message": f"再次达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。是否继续执行？",
+                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "partial_output": full_response
+            }
+            
+        except Exception as e:
+            yield {
+                "type": "error",
+                "content": f"继续执行失败: {str(e)}"
             }
 
     def get_history(self, session_id: str = "default") -> List[Dict]:
