@@ -324,34 +324,17 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
     """
     管理任务列表，用于跟踪复杂任务的进度。
     
-    **使用场景：**
-    - 任务复杂，需要拆分为多个步骤时
-    - 需要在多个工具调用之间保持任务上下文时
-    - 用户明确要求跟踪任务进度时
+    **重要规则：每次完成一个任务步骤后，必须立即调用此工具更新状态！**
     
-    **不使用场景：**
-    - 简单的单步任务（如"查看当前目录"）
-    - 一次性查询或简单对话
-    
-    **状态说明：**
-    - pending: 待处理
-    - in_progress: 进行中（同一时间只能有一个）
-    - completed: 已完成
-    - cancelled: 已取消
-    
-    **⚠️ 重要规则：每完成一个任务步骤后，必须立即调用此工具更新状态！**
-    
-    **调用时机：**
-    1. 开始复杂任务时：创建任务列表，第一个任务设为 in_progress
-    2. 完成一个步骤后：将当前任务设为 completed，下一个任务设为 in_progress
-    3. 任务取消或失败时：更新相应任务状态
+    状态类型：pending, in_progress, completed, cancelled
+    约束：同一时间只能有一个任务处于 in_progress 状态。
     
     Args:
         items: 任务列表，每个任务包含：
-            - id: 任务唯一标识符（如 "1", "2", "task_1" 等）
+            - id: 任务唯一标识（如 "1", "2"）
             - text: 任务描述
-            - status: 状态 (pending/in_progress/completed/cancelled)
-            
+            - status: 状态（pending/in_progress/completed/cancelled）
+        
     Returns:
         格式化的任务列表字符串
     """
@@ -368,15 +351,10 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
 @tool
 def get_todo_status() -> str:
     """
-    获取当前任务状态。
-    
-    返回当前任务列表的完整状态，包括：
-    - 所有任务及其状态
-    - 统计信息
-    - 是否需要关注
+    获取当前任务状态摘要，包括所有任务及其进度统计。
     
     Returns:
-        任务状态摘要
+        任务状态摘要字符串
     """
     session_id = get_current_session()
     manager = get_todo_manager(session_id)

@@ -360,10 +360,13 @@ CONFIRMATION_REQUIRED_MARKER = "__CONFIRMATION_REQUIRED__"
 @tool
 def execute_bash(command: str) -> str:
     """
-    执行bash命令。读取类命令直接执行，修改类命令需要用户确认。
+    执行 bash 命令。读取类命令直接执行，修改类命令需要用户确认。
+    
+    安全命令（直接执行）：ls, cat, grep, find, pwd 等
+    危险命令（需确认）：rm, sudo, chmod, 重定向(>) 等
     
     Args:
-        command: 要执行的bash命令
+        command: 要执行的 bash 命令
         
     Returns:
         命令执行结果或确认请求
@@ -434,10 +437,7 @@ def execute_cancelled_bash(command: str) -> str:
 @tool
 def get_bash_tool_detailed_usage() -> str:
     """
-    获取 bash 工具的详细使用说明。
-    
-    当你不确定如何使用 execute_bash 工具，或需要了解命令分类、安全策略等信息时，
-    调用此工具获取完整的使用指南。
+    获取 bash 工具的详细使用说明，包括安全策略和最佳实践。
     
     Returns:
         详细的使用说明文本
