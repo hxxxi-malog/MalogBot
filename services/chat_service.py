@@ -22,6 +22,13 @@ from agent.tools.bash import (
     execute_confirmed_bash,
     CONFIRMATION_REQUIRED_MARKER
 )
+from agent.tools.todo_manager import (
+    todo_manager,
+    get_todo_status,
+    get_todo_manager,
+    remove_todo_manager,
+    set_current_session
+)
 from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
@@ -37,7 +44,13 @@ class ChatService:
         self.llm = get_llm(streaming=True)
         
         # 基础工具（始终可用）
-        self.base_tools = [execute_bash, get_bash_tool_detailed_usage]
+        # 包含 todo_manager 和 get_todo_status 用于任务管理
+        self.base_tools = [
+            execute_bash,
+            get_bash_tool_detailed_usage,
+            todo_manager,
+            get_todo_status
+        ]
         
         # 创建支持工具调用的Agent（使用基础工具）
         self.agent = create_react_agent(self.llm, self.base_tools)
@@ -141,6 +154,8 @@ class ChatService:
         Returns:
             是否删除成功
         """
+        # 清理会话的 TodoManager
+        remove_todo_manager(session_id)
         return session_store.delete_session(session_id)
 
     def get_all_sessions(self) -> List[Dict]:
@@ -199,8 +214,15 @@ class ChatService:
             self._compress_history_in_db(session_id, chat_history)
 
         try:
+            # 设置当前会话ID（供工具使用）
+            set_current_session(session_id)
+            
+            # 检查是否需要注入任务提醒（问责机制）
+            todo_mgr = get_todo_manager(session_id)
+            reminder = todo_mgr.get_reminder_message()
+            
             # 构建消息列表
-            messages = self._build_messages(chat_history, user_input)
+            messages = self._build_messages(chat_history, user_input, reminder)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
@@ -210,6 +232,9 @@ class ChatService:
 
             # 提取最终输出
             output = self._extract_ai_message(result)
+            
+            # 增加任务管理器的轮次计数（用于问责机制）
+            todo_mgr.increment_turn()
 
             # 检查是否包含需要确认的命令标记
             confirmation_info = self._extract_confirmation_required(output)
@@ -284,8 +309,15 @@ class ChatService:
             self._compress_history_in_db(session_id, chat_history)
 
         try:
+            # 设置当前会话ID（供工具使用）
+            set_current_session(session_id)
+            
+            # 检查是否需要注入任务提醒（问责机制）
+            todo_mgr = get_todo_manager(session_id)
+            reminder = todo_mgr.get_reminder_message()
+            
             # 构建消息列表
-            messages = self._build_messages(chat_history, user_input)
+            messages = self._build_messages(chat_history, user_input, reminder)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
@@ -413,6 +445,9 @@ class ChatService:
             # 保存对话历史
             self._save_message(session_id, "user", user_input)
             self._save_message(session_id, "assistant", full_response)
+            
+            # 增加任务管理器的轮次计数（用于问责机制）
+            todo_mgr.increment_turn()
 
             # 发送完成信号
             yield {
@@ -751,7 +786,8 @@ class ChatService:
     def _build_messages(
             self,
             chat_history: List[Dict],
-            user_input: str
+            user_input: str,
+            todo_reminder: str = ""
     ) -> List:
         """
         构建LangChain消息列表
@@ -759,6 +795,7 @@ class ChatService:
         Args:
             chat_history: 对话历史
             user_input: 当前用户输入
+            todo_reminder: 任务提醒消息（问责机制触发时注入）
             
         Returns:
             LangChain消息对象列表
@@ -781,6 +818,10 @@ class ChatService:
                 # 系统消息已经处理过了，跳过
                 pass
             # 注意：不再处理 tool 角色，因为它需要前置的 tool_calls
+
+        # 如果有任务提醒，作为系统消息注入
+        if todo_reminder:
+            messages.append(SystemMessage(content=todo_reminder))
 
         # 添加当前用户消息
         messages.append(HumanMessage(content=user_input))
