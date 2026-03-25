@@ -6,14 +6,14 @@ openai>=1.0.0
 langchain>=0.3.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
+langgraph>=0.2.0
 
-# 数据库（后续PostgreSQL集成时启用）
-# sqlalchemy>=2.0.0
-# psycopg2-binary>=2.9.0
+# 数据库
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
 
 # 配置管理
 python-dotenv>=1.0.0
 
-# 工具扩展（后续集成时启用）
-# langchain-community>=0.3.0
-# langchain-postgres>=0.0.12
+# 工具扩展
+langchain-community>=0.3.0
