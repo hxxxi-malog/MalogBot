@@ -32,6 +32,11 @@ class Config:
     # 工具配置
     BASH_TIMEOUT = int(os.getenv('BASH_TIMEOUT', '30'))  # 命令超时时间（秒）
 
+    # LangSmith 可视化追踪配置
+    LANGCHAIN_TRACING_V2 = os.getenv('LANGCHAIN_TRACING_V2', 'false').lower() == 'true'
+    LANGCHAIN_API_KEY = os.getenv('LANGCHAIN_API_KEY')
+    LANGCHAIN_PROJECT = os.getenv('LANGCHAIN_PROJECT', 'MalogBot')
+
     # 危险命令配置
     DANGEROUS_COMMANDS = [
         'sudo',
