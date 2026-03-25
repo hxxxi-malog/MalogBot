@@ -5,20 +5,175 @@ Bash工具模块
 1. 命令分类（读取类 vs 执行类）
 2. 执行类命令需要用户确认
 3. 读取类命令可以直接执行
+4. 安全增强：防止命令注入、shell注入
 """
 import os
 import re
+import shlex
 import subprocess
-from typing import Tuple, Dict, Any
+from typing import Tuple, List, Optional
 
 from langchain_core.tools import tool
 
 from config import Config
 
 
+# ==================== 安全配置 ====================
+
+# 危险命令黑名单（这些命令必须用户确认）
+DANGEROUS_COMMANDS = {
+    # 文件操作危险命令
+    'rm', 'rmdir', 'shred',
+    # 权限相关
+    'sudo', 'su', 'doas', 'chmod', 'chown', 'chgrp',
+    # 系统危险操作
+    'dd', 'mkfs', 'fdisk', 'parted', 'shutdown', 'reboot', 'init',
+    # 网络命令（可能泄露数据）
+    'nc', 'netcat', 'telnet', 'ssh', 'scp', 'rsync', 'wget', 'curl',
+    # 进程管理
+    'kill', 'killall', 'pkill',
+    # 其他危险命令
+    'crontab', 'at', 'batch',
+}
+
+# 安全命令白名单（这些命令可以无需确认执行）
+SAFE_COMMANDS = {
+    # 文件查看
+    'ls', 'dir', 'cat', 'head', 'tail', 'less', 'more', 'wc',
+    'file', 'stat', 'tree', 'du', 'df',
+    # 文本处理
+    'grep', 'egrep', 'fgrep', 'sed', 'awk', 'cut', 'sort', 'uniq',
+    'diff', 'cmp', 'find', 'locate',
+    # 系统信息
+    'pwd', 'whoami', 'hostname', 'uname', 'date', 'cal', 'uptime',
+    'env', 'printenv', 'echo', 'type', 'which', 'whereis',
+    'history', 'id', 'groups',
+    # Git 读取类
+    'git',
+    # 开发工具（读取类）
+    'python', 'python3', 'pip', 'pip3', 'node', 'npm', 'npx',
+}
+
+# 命令注入危险模式（检测 shell 注入攻击）
+# 注意：管道操作(|)是安全的常用功能，不应该被误判为注入
+# 我们在其他地方通过检查管道后的命令是否安全来控制
+INJECTION_PATTERNS = [
+    (r';\s*\w', '命令分隔符注入 (;)'),
+    # 移除管道注入检测，因为管道是合法的命令组合方式
+    # 管道的安全性通过 get_command_type 中的逻辑来保证
+    (r'\$\s*\(', '命令替换注入 ($())'),
+    (r'`[^`]+`', '命令替换注入 (``)'),
+    (r'&&\s*\w', '命令链注入 (&&)'),
+    (r'\|\|\s*\w', '命令链注入 (||)'),
+    (r'\$\{[^}]+\}', '变量扩展注入 (${}})'),
+]
+
+
+# ==================== 命令解析与安全检测 ====================
+
+def parse_command(command: str) -> Tuple[List[str], Optional[str]]:
+    """
+    安全解析命令字符串
+    
+    Args:
+        command: 要解析的命令字符串
+        
+    Returns:
+        (tokens, error) 元组：
+        - tokens: 解析后的参数列表
+        - error: 错误信息（如果解析失败）
+    """
+    try:
+        tokens = shlex.split(command)
+        return tokens, None
+    except ValueError as e:
+        return [], f"命令解析错误: {str(e)}"
+
+
+def detect_injection(command: str) -> Tuple[bool, str]:
+    """
+    检测命令注入攻击
+    
+    Args:
+        command: 要检测的命令字符串
+        
+    Returns:
+        (is_injection, reason) 元组
+    """
+    for pattern, reason in INJECTION_PATTERNS:
+        if re.search(pattern, command):
+            return True, reason
+    return False, ""
+
+
+def get_base_command(tokens: List[str]) -> str:
+    """
+    获取基础命令名称
+    
+    处理带路径的命令，如 /bin/rm -> rm
+    """
+    if not tokens:
+        return ""
+    return os.path.basename(tokens[0])
+
+
+def check_dangerous_command(command: str) -> Tuple[bool, str]:
+    """
+    检查命令是否包含危险操作（增强版）
+    
+    Args:
+        command: 要检查的bash命令
+        
+    Returns:
+        (is_dangerous, reason) 元组
+    """
+    command_lower = command.lower().strip()
+    
+    # 1. 检查命令注入
+    is_injection, injection_reason = detect_injection(command)
+    if is_injection:
+        return True, f"检测到潜在的安全威胁: {injection_reason}"
+    
+    # 2. 解析命令
+    tokens, parse_error = parse_command(command)
+    if parse_error:
+        # 解析失败，可能是恶意构造
+        return True, parse_error
+    
+    if not tokens:
+        return False, ""
+    
+    # 3. 获取基础命令
+    base_cmd = get_base_command(tokens)
+    
+    # 4. 检查白名单（配置文件中允许的危险模式）
+    for allowed_pattern in Config.ALLOWED_DANGEROUS_PATTERNS:
+        if allowed_pattern.lower() in command_lower:
+            return False, ""
+    
+    # 5. 检查危险命令黑名单
+    if base_cmd in DANGEROUS_COMMANDS:
+        return True, f"危险命令: {base_cmd}"
+    
+    # 6. 检查特定的危险模式
+    dangerous_patterns = [
+        (r'rm\s+-rf\s+/', '可能删除整个系统'),
+        (r'rm\s+-rf\s+~', '可能删除用户主目录'),
+        (r'rm\s+-rf\s+\*', '可能删除当前目录所有文件'),
+        (r'chmod\s+777', '可能造成权限问题'),
+        (r'>\s*/dev/sd', '可能写入磁盘设备'),
+    ]
+    
+    for pattern, reason in dangerous_patterns:
+        if re.search(pattern, command_lower):
+            return True, f"检测到危险操作: {reason}"
+    
+    return False, ""
+
+
 def get_command_type(command: str) -> Tuple[str, str, str]:
     """
-    分析命令类型，判断是否需要用户确认
+    分析命令类型，判断是否需要用户确认（增强版）
     
     Args:
         command: 要分析的bash命令
@@ -32,134 +187,74 @@ def get_command_type(command: str) -> Tuple[str, str, str]:
     command_lower = command.lower().strip()
     working_dir = os.getcwd()
     
-    # 读取类命令列表（这些命令只读取信息，不修改系统状态）
-    read_only_patterns = [
-        (r'^\s*ls\b', '列出目录内容'),
-        (r'^\s*cat\b', '查看文件内容'),
-        (r'^\s*head\b', '查看文件开头'),
-        (r'^\s*tail\b', '查看文件结尾'),
-        (r'^\s*less\b', '分页查看文件'),
-        (r'^\s*more\b', '分页查看文件'),
-        (r'^\s*pwd\b', '显示当前目录'),
-        (r'^\s*whoami\b', '显示当前用户'),
-        (r'^\s*which\b', '查找命令位置'),
-        (r'^\s*whereis\b', '查找命令位置'),
-        (r'^\s*find\b.*-\s*name\b', '查找文件'),
-        (r'^\s*grep\b', '搜索文本'),
-        (r'^\s*egrep\b', '搜索文本'),
-        (r'^\s*fgrep\b', '搜索文本'),
-        (r'^\s*wc\b', '统计文件信息'),
-        (r'^\s*stat\b', '查看文件状态'),
-        (r'^\s*file\b', '查看文件类型'),
-        (r'^\s*du\b', '查看磁盘使用'),
-        (r'^\s*df\b', '查看磁盘空间'),
-        (r'^\s*tree\b', '显示目录树'),
-        (r'^\s*echo\b.*\$\(', '显示变量或命令结果'),  # echo $VAR 或 echo $(cmd) 形式
-        (r'^\s*echo\b[^>]*$', '显示文本'),  # echo 纯文本（不包含重定向）
-        (r'^\s*type\b', '查看命令类型'),
-        (r'^\s*uname\b', '显示系统信息'),
-        (r'^\s*date\b', '显示日期'),
-        (r'^\s*history\b', '查看命令历史'),
-        (r'^\s*env\b', '查看环境变量'),
-        (r'^\s*printenv\b', '查看环境变量'),
-        (r'^\s*git\s+status\b', '查看Git状态'),
-        (r'^\s*git\s+log\b', '查看Git日志'),
-        (r'^\s*git\s+branch\b', '查看Git分支'),
-        (r'^\s*git\s+remote\b', '查看Git远程仓库'),
-        (r'^\s*git\s+diff\b', '查看Git差异'),
-        (r'^\s*git\s+show\b', '查看Git提交'),
-    ]
+    # 解析命令
+    tokens, _ = parse_command(command)
+    if not tokens:
+        return "execute", "未知命令", working_dir
     
-    # 检查是否是读取类命令
-    for pattern, operation in read_only_patterns:
-        if re.search(pattern, command_lower):
-            return "read", operation, working_dir
+    base_cmd = get_base_command(tokens)
     
-    # 检查是否包含输出重定向（> 或 >>），这会修改文件
-    if '>' in command:
-        return "execute", "写入/重定向到文件", working_dir
-    
-    # 检查是否是读取类命令但有管道（如 cat file | grep xxx）
-    # 如果管道后面也是读取类命令，整体仍是读取
-    if '|' in command:
-        parts = command.split('|')
-        all_read = True
-        for part in parts:
-            part = part.strip()
-            is_read_cmd = any(
-                re.search(pattern, part.lower()) 
-                for pattern, _ in read_only_patterns
-            )
-            if not is_read_cmd:
-                all_read = False
-                break
-        if all_read:
-            return "read", "管道组合查询", working_dir
-    
-    # 默认为执行类命令
-    return "execute", "执行命令", working_dir
-
-
-def check_dangerous_command(command: str) -> Tuple[bool, str]:
-    """
-    检查命令是否包含危险操作
-    
-    Args:
-        command: 要检查的bash命令
+    # 1. 检查是否是安全命令
+    if base_cmd in SAFE_COMMANDS:
+        # 特殊处理 git 命令，只允许读取类操作
+        if base_cmd == 'git':
+            git_read_only = ['status', 'log', 'branch', 'remote', 'diff', 'show', 
+                            'ls-files', 'ls-tree', 'rev-parse', 'describe']
+            if len(tokens) > 1 and tokens[1] in git_read_only:
+                return "read", f"Git {tokens[1]}", working_dir
+            # 其他 git 命令需要确认
+            return "execute", "Git 操作", working_dir
         
-    Returns:
-        (is_dangerous, reason) 元组：
-        - is_dangerous: 是否是危险命令
-        - reason: 危险原因说明
-    """
-    command_lower = command.lower().strip()
+        # 检查是否有输出重定向（写入文件）
+        if '>' in command:
+            return "execute", "写入/重定向到文件", working_dir
+        
+        return "read", f"执行 {base_cmd}", working_dir
+    
+    # 2. 检查是否是危险命令
+    if base_cmd in DANGEROUS_COMMANDS:
+        return "execute", f"危险命令: {base_cmd}", working_dir
+    
+    # 3. 检查管道和重定向（增强版）
+    if '|' in command:
+        # 检查管道后的所有命令是否安全
+        parts = command.split('|')
+        all_safe = True
+        unsafe_commands = []
+        
+        for part in parts:
+            part_tokens, _ = parse_command(part.strip())
+            if part_tokens:
+                part_base_cmd = get_base_command(part_tokens)
+                # 检查是否在安全白名单中
+                if part_base_cmd not in SAFE_COMMANDS:
+                    all_safe = False
+                    unsafe_commands.append(part_base_cmd)
+                # 检查是否在危险黑名单中
+                elif part_base_cmd in DANGEROUS_COMMANDS:
+                    all_safe = False
+                    unsafe_commands.append(part_base_cmd)
+        
+        if all_safe:
+            return "read", "管道组合查询", working_dir
+        else:
+            # 管道中包含不安全的命令，需要确认
+            return "execute", f"管道包含非安全命令: {', '.join(unsafe_commands)}", working_dir
+    
+    # 4. 默认为执行类命令
+    return "execute", f"执行 {base_cmd}", working_dir
 
-    # 检查白名单（允许的危险模式）
-    for allowed_pattern in Config.ALLOWED_DANGEROUS_PATTERNS:
-        if allowed_pattern.lower() in command_lower:
-            return False, ""
 
-    # 检查危险命令
-    dangerous_keywords = {
-        'sudo': '需要超级用户权限',
-        'rm -rf /': '可能删除整个系统',
-        'rm -rf ~': '可能删除用户主目录',
-        'rm -rf *': '可能删除当前目录所有文件',
-        'chmod 777': '可能造成权限问题',
-        'chown': '修改文件所有者',
-        'dd': '低级别磁盘操作',
-        'mkfs': '格式化文件系统',
-        'fdisk': '磁盘分区操作',
-        'shutdown': '关闭系统',
-        'reboot': '重启系统',
-        'init 0': '关闭系统',
-        'init 6': '重启系统',
-    }
-
-    for keyword, reason in dangerous_keywords.items():
-        if keyword in command_lower:
-            return True, f"检测到危险操作: {reason}"
-
-    # 检查单独的rm命令（不在白名单中）
-    if re.search(r'\brm\b', command_lower):
-        # 检查是否是rm但不在白名单中
-        is_in_whitelist = any(
-            pattern.lower() in command_lower
-            for pattern in Config.ALLOWED_DANGEROUS_PATTERNS
-        )
-        if not is_in_whitelist:
-            return True, "删除命令需要确认"
-
-    # 检查sudo
-    if 'sudo' in command_lower:
-        return True, "需要超级用户权限"
-
-    return False, ""
-
+# ==================== 命令执行 ====================
 
 def execute_bash_direct(command: str) -> str:
     """
-    直接执行bash命令（内部方法，不通过LangChain）
+    安全执行bash命令（增强版）
+    
+    改进：
+    1. 使用 shlex 正确解析命令
+    2. 使用 shell=False 防止 shell 注入
+    3. 更完善的错误处理
     
     Args:
         command: 要执行的bash命令
@@ -168,24 +263,65 @@ def execute_bash_direct(command: str) -> str:
         命令执行结果
     """
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=Config.BASH_TIMEOUT
-        )
+        # 1. 解析命令
+        tokens, parse_error = parse_command(command)
+        if parse_error:
+            return f"❌ {parse_error}"
+        
+        if not tokens:
+            return "❌ 空命令"
+        
+        # 2. 获取基础命令并检查安全性
+        base_cmd = get_base_command(tokens)
+        
+        # 最后一次安全检查（双重保险）
+        is_dangerous, danger_reason = check_dangerous_command(command)
+        if is_dangerous:
+            return f"❌ 安全拦截: {danger_reason}"
+        
+        # 3. 构建执行命令
+        # 对于简单命令，直接执行
+        # 对于包含管道、重定向的复杂命令，需要通过 shell 执行
+        needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', '`', '$('])
+        
+        if needs_shell:
+            # 复杂命令需要 shell，但已经过安全检测
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=Config.BASH_TIMEOUT,
+                cwd=os.getcwd()
+            )
+        else:
+            # 简单命令直接执行，不经过 shell（更安全）
+            result = subprocess.run(
+                tokens,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=Config.BASH_TIMEOUT,
+                cwd=os.getcwd()
+            )
 
         if result.returncode == 0:
-            return result.stdout if result.stdout.strip() else "命令执行成功（无输出）"
+            return result.stdout.strip() if result.stdout.strip() else "✅ 命令执行成功（无输出）"
         else:
-            return f"错误（退出码 {result.returncode}）:\n{result.stderr}"
+            error_msg = result.stderr.strip() if result.stderr.strip() else f"退出码 {result.returncode}"
+            return f"❌ 错误: {error_msg}"
 
     except subprocess.TimeoutExpired:
-        return f"错误: 命令执行超时（{Config.BASH_TIMEOUT}秒）"
+        return f"❌ 命令执行超时（{Config.BASH_TIMEOUT}秒）"
+    except FileNotFoundError:
+        return f"❌ 命令不存在: {base_cmd}"
+    except PermissionError:
+        return f"❌ 权限不足: {base_cmd}"
     except Exception as e:
-        return f"错误: {str(e)}"
+        return f"❌ 执行错误: {str(e)}"
 
+
+# ==================== LangChain 工具定义 ====================
 
 # 定义一个特殊的返回结构，用于标记需要确认的命令
 CONFIRMATION_REQUIRED_MARKER = "__CONFIRMATION_REQUIRED__"
@@ -202,6 +338,7 @@ def execute_bash(command: str) -> str:
     - 读取类命令（ls、cat、grep等）可以直接执行
     - 执行类命令（写入、删除、运行程序等）需要用户确认后才能执行
     - 危险命令（如sudo、rm等）会特别提示风险
+    - 已增强安全检测，防止命令注入攻击
     
     Args:
         command: 要执行的bash命令
@@ -216,18 +353,21 @@ def execute_bash(command: str) -> str:
     """
     import json
     
-    # 分析命令类型
-    cmd_type, operation, working_dir = get_command_type(command)
-    
-    # 检查是否是危险命令
+    # 1. 安全检测
     is_dangerous, danger_reason = check_dangerous_command(command)
     
-    # 如果是读取类命令，直接执行
+    # 2. 分析命令类型
+    cmd_type, operation, working_dir = get_command_type(command)
+    
+    # 3. 如果检测到命令注入，直接拒绝
+    if is_dangerous and "注入" in danger_reason:
+        return f"❌ 安全拦截: {danger_reason}。请使用安全的命令格式。"
+    
+    # 4. 如果是安全的读取类命令，直接执行
     if cmd_type == "read" and not is_dangerous:
         return execute_bash_direct(command)
     
-    # 执行类命令或危险命令，需要用户确认
-    # 构建需要确认的消息
+    # 5. 执行类命令或危险命令，需要用户确认
     if is_dangerous:
         confirm_message = f"⚠️ 危险命令检测: {danger_reason}"
     else:
