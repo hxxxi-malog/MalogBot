@@ -20,16 +20,137 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #f5f5f5;
             height: 100vh;
+            display: flex;
         }
 
-        .chat-container {
-            max-width: 800px;
-            margin: 0 auto;
+        /* 侧边栏样式 */
+        .sidebar {
+            width: 280px;
+            background: #2d3748;
+            color: white;
+            display: flex;
+            flex-direction: column;
             height: 100vh;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #4a5568;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sidebar-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .new-chat-btn {
+            background: #4a90d9;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: background 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: #3a7bc8;
+        }
+
+        .session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .session-item {
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .session-item:hover {
+            background: #4a5568;
+        }
+
+        .session-item.active {
+            background: #4a90d9;
+        }
+
+        .session-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .session-title {
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .session-meta {
+            font-size: 11px;
+            color: #a0aec0;
+            margin-top: 4px;
+        }
+
+        .session-item.active .session-meta {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .session-actions {
+            display: none;
+            gap: 4px;
+        }
+
+        .session-item:hover .session-actions {
+            display: flex;
+        }
+
+        .session-item.active:hover .session-actions {
+            display: flex;
+        }
+
+        .session-action-btn {
+            background: transparent;
+            border: none;
+            color: #a0aec0;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .session-action-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .session-action-btn.delete:hover {
+            color: #fc8181;
+        }
+
+        /* 主聊天区域 */
+        .chat-container {
+            flex: 1;
             display: flex;
             flex-direction: column;
             background: white;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            height: 100vh;
         }
 
         .chat-header {
@@ -375,12 +496,285 @@
         .command-confirm-card.cancelled .command-confirm-btn {
             display: none;
         }
+
+        /* 空状态提示 */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #a0aec0;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state-text {
+            font-size: 14px;
+        }
+
+        /* ==================== 欢迎页样式 ==================== */
+        .welcome-page {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .welcome-page.hidden {
+            display: none;
+        }
+
+        .welcome-logo {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .welcome-title {
+            font-size: 32px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 12px;
+        }
+
+        .welcome-subtitle {
+            font-size: 16px;
+            color: #718096;
+            margin-bottom: 40px;
+            text-align: center;
+        }
+
+        .welcome-input-container {
+            width: 100%;
+            max-width: 600px;
+            position: relative;
+            margin-bottom: 40px;
+        }
+
+        .welcome-input {
+            width: 100%;
+            padding: 16px 60px 16px 20px;
+            border: 2px solid #e2e8f0;
+            border-radius: 16px;
+            font-size: 16px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .welcome-input:focus {
+            border-color: #4a90d9;
+            box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.1);
+        }
+
+        .welcome-send-btn {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: #4a90d9;
+            color: white;
+            border: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .welcome-send-btn:hover {
+            background: #3a7bc8;
+        }
+
+        .welcome-send-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .history-section {
+            width: 100%;
+            max-width: 600px;
+        }
+
+        .history-title {
+            font-size: 14px;
+            color: #718096;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            padding: 14px 16px;
+            background: #f7fafc;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .history-item:hover {
+            background: #edf2f7;
+            border-color: #e2e8f0;
+        }
+
+        .history-item-icon {
+            font-size: 20px;
+            margin-right: 12px;
+        }
+
+        .history-item-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .history-item-title {
+            font-size: 14px;
+            color: #2d3748;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .history-item-meta {
+            font-size: 12px;
+            color: #a0aec0;
+            margin-top: 2px;
+        }
+
+        .history-item-action {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .history-item:hover .history-item-action {
+            opacity: 1;
+        }
+
+        .history-delete-btn {
+            background: transparent;
+            border: none;
+            color: #a0aec0;
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+
+        .history-delete-btn:hover {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .no-history {
+            text-align: center;
+            color: #a0aec0;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        /* 隐藏聊天界面 */
+        .chat-interface {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .chat-interface.hidden {
+            display: none;
+        }
+
+        /* 移动端适配 */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                left: -280px;
+                z-index: 1000;
+                transition: left 0.3s;
+            }
+
+            .sidebar.open {
+                left: 0;
+            }
+
+            .welcome-page {
+                padding: 20px;
+            }
+
+            .welcome-title {
+                font-size: 24px;
+            }
+
+            .message-content {
+                max-width: 85%;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="chat-container">
+    <!-- 侧边栏 -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <span class="sidebar-title">💬 对话列表</span>
+            <button class="new-chat-btn" id="newChatBtnSidebar" title="新建对话">
+                <span>➕</span>
+            </button>
+        </div>
+        <div class="session-list" id="sessionList">
+            <!-- 会话列表将通过JS动态生成 -->
+        </div>
+    </div>
+
+    <!-- 欢迎页 -->
+    <div class="welcome-page" id="welcomePage">
+        <div class="welcome-logo">🤖</div>
+        <h1 class="welcome-title">MalogBot</h1>
+        <p class="welcome-subtitle">您的智能助手，随时准备为您解答问题</p>
+        
+        <div class="welcome-input-container">
+            <input 
+                type="text" 
+                class="welcome-input" 
+                id="welcomeInput" 
+                placeholder="输入您的问题，开始新对话..."
+                autocomplete="off"
+            >
+            <button class="welcome-send-btn" id="welcomeSendBtn">➤</button>
+        </div>
+        
+        <div class="history-section" id="historySection">
+            <div class="history-title">
+                <span>📜</span>
+                <span>历史对话</span>
+            </div>
+            <div class="history-list" id="historyList">
+                <!-- 历史对话列表将通过JS动态生成 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 聊天界面 -->
+    <div class="chat-interface hidden" id="chatInterface">
         <div class="chat-header">
-            <h1>MalogBot</h1>
+            <h1>🤖 MalogBot</h1>
         </div>
         
         <div class="chat-messages" id="chatMessages">
@@ -401,17 +795,35 @@
     </div>
 
     <script>
+        // DOM 元素
+        const welcomePage = document.getElementById('welcomePage');
+        const chatInterface = document.getElementById('chatInterface');
         const chatMessages = document.getElementById('chatMessages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const stopButton = document.getElementById('stopButton');
         const typingIndicator = document.getElementById('typingIndicator');
+        const sidebar = document.getElementById('sidebar');
+        const sessionList = document.getElementById('sessionList');
+        const newChatBtnSidebar = document.getElementById('newChatBtnSidebar');
+        const welcomeInput = document.getElementById('welcomeInput');
+        const welcomeSendBtn = document.getElementById('welcomeSendBtn');
+        const historyList = document.getElementById('historyList');
         
         // 保存当前对话的原始用户消息，用于多步骤确认
         let currentOriginalUserMessage = '';
 
         // 用于取消请求的 AbortController
         let currentAbortController = null;
+
+        // 当前会话ID
+        let currentSessionId = null;
+
+        // 是否处于欢迎页
+        let isWelcomeMode = true;
+
+        // 会话列表缓存
+        let sessionsCache = [];
 
         // 配置 marked
         marked.setOptions({
@@ -479,6 +891,27 @@
         function hideStopButton() {
             sendButton.style.display = 'block';
             stopButton.classList.remove('show');
+        }
+
+        // 显示欢迎页
+        function showWelcomePage() {
+            isWelcomeMode = true;
+            welcomePage.classList.remove('hidden');
+            chatInterface.classList.add('hidden');
+            currentSessionId = null;
+            renderSessionList(); // 更新侧边栏高亮
+            renderHistoryList(); // 更新欢迎页历史列表
+            welcomeInput.focus();
+        }
+
+        // 显示聊天界面
+        function showChatInterface() {
+            isWelcomeMode = false;
+            welcomePage.classList.add('hidden');
+            chatInterface.classList.remove('hidden');
+            messageInput.focus();
+            // 切换到聊天界面后重新渲染会话列表，确保高亮正确
+            renderSessionList();
         }
 
         // 停止生成
@@ -667,6 +1100,7 @@
                     sendButton.disabled = false;
                     currentAbortController = null;
                     messageInput.focus();
+                    loadSessions(); // 刷新会话列表
                 });
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -717,6 +1151,7 @@
                     sendButton.disabled = false;
                     currentAbortController = null;
                     messageInput.focus();
+                    loadSessions(); // 刷新会话列表
                 });
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -732,12 +1167,20 @@
             }
         }
 
-        async function sendMessage() {
-            const content = messageInput.value.trim();
+        // 发送消息的核心函数
+        async function sendMessageWithInput(content, isNewSession = false) {
             if (!content) return;
 
             // 保存原始用户消息，用于后续确认
             currentOriginalUserMessage = content;
+            
+            // 如果是新会话，先创建会话
+            if (isNewSession || !currentSessionId) {
+                await createNewSession(false);
+            }
+            
+            // 显示聊天界面
+            showChatInterface();
             
             // 添加用户消息
             addMessage(content, 'user', false);
@@ -837,6 +1280,9 @@
                     }
                 }
 
+                // 发送完成后刷新会话列表
+                loadSessions();
+
             } catch (error) {
                 if (error.name === 'AbortError') {
                     // 用户主动取消，不显示错误
@@ -854,17 +1300,297 @@
             messageInput.focus();
         }
 
+        async function sendMessage() {
+            const content = messageInput.value.trim();
+            await sendMessageWithInput(content, false);
+        }
+
+        // ==================== 会话管理 ====================
+
+        // 加载会话列表
+        async function loadSessions() {
+            try {
+                const response = await fetch('/sessions');
+                const data = await response.json();
+                
+                sessionsCache = data.sessions || [];
+                // 后端返回的 current_session_id
+                const backendSessionId = data.current_session_id;
+                
+                // 在非欢迎页模式下，如果后端返回了有效的 session_id，使用它
+                if (!isWelcomeMode && backendSessionId) {
+                    currentSessionId = backendSessionId;
+                }
+                
+                // 在欢迎页模式下，检查是否需要自动切换到已有会话
+                if (isWelcomeMode && backendSessionId) {
+                    const currentSession = sessionsCache.find(s => s.session_id === backendSessionId);
+                    if (currentSession && currentSession.message_count > 0) {
+                        // 有消息的会话，显示聊天界面
+                        currentSessionId = backendSessionId;
+                        await loadSessionHistory(backendSessionId);
+                        showChatInterface();
+                    }
+                }
+                
+                renderSessionList();
+                renderHistoryList();
+            } catch (error) {
+                console.error('Load sessions error:', error);
+            }
+        }
+
+        // 渲染侧边栏会话列表
+        function renderSessionList() {
+            sessionList.innerHTML = '';
+            
+            if (sessionsCache.length === 0) {
+                sessionList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">💬</div>
+                        <div class="empty-state-text">暂无对话记录<br>点击"+"开始聊天</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            sessionsCache.forEach(session => {
+                const item = document.createElement('div');
+                item.className = 'session-item' + (session.session_id === currentSessionId && !isWelcomeMode ? ' active' : '');
+                item.dataset.sessionId = session.session_id;
+                
+                // 格式化时间
+                const updatedAt = new Date(session.updated_at);
+                const timeStr = formatTime(updatedAt);
+                
+                // 获取会话标题（使用第一条用户消息或默认标题）
+                const title = `对话 ${session.session_id.substring(0, 8)}`;
+                
+                item.innerHTML = `
+                    <div class="session-info">
+                        <div class="session-title">${escapeHtml(title)}</div>
+                        <div class="session-meta">${timeStr} · ${session.message_count} 条消息</div>
+                    </div>
+                    <div class="session-actions">
+                        <button class="session-action-btn delete" title="删除对话">🗑️</button>
+                    </div>
+                `;
+                
+                // 点击切换会话
+                item.addEventListener('click', (e) => {
+                    if (!e.target.classList.contains('session-action-btn')) {
+                        switchToSession(session.session_id);
+                    }
+                });
+                
+                // 删除按钮
+                const deleteBtn = item.querySelector('.session-action-btn.delete');
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteSession(session.session_id);
+                });
+                
+                sessionList.appendChild(item);
+            });
+        }
+
+        // 渲染欢迎页历史列表
+        function renderHistoryList() {
+            // 过滤出有消息的会话
+            const sessionsWithMessages = sessionsCache.filter(s => s.message_count > 0);
+            
+            historyList.innerHTML = '';
+            
+            if (sessionsWithMessages.length === 0) {
+                historyList.innerHTML = '<div class="no-history">暂无历史对话</div>';
+                return;
+            }
+            
+            sessionsWithMessages.forEach(session => {
+                const item = document.createElement('div');
+                item.className = 'history-item';
+                item.dataset.sessionId = session.session_id;
+                
+                // 格式化时间
+                const updatedAt = new Date(session.updated_at);
+                const timeStr = formatTime(updatedAt);
+                
+                // 获取会话标题
+                const title = `对话 ${session.session_id.substring(0, 8)}`;
+                
+                item.innerHTML = `
+                    <span class="history-item-icon">💬</span>
+                    <div class="history-item-content">
+                        <div class="history-item-title">${escapeHtml(title)}</div>
+                        <div class="history-item-meta">${timeStr} · ${session.message_count} 条消息</div>
+                    </div>
+                    <div class="history-item-action">
+                        <button class="history-delete-btn" title="删除">🗑️</button>
+                    </div>
+                `;
+                
+                // 点击进入会话
+                item.addEventListener('click', (e) => {
+                    if (!e.target.classList.contains('history-delete-btn')) {
+                        switchToSession(session.session_id);
+                    }
+                });
+                
+                // 删除按钮
+                const deleteBtn = item.querySelector('.history-delete-btn');
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteSession(session.session_id);
+                });
+                
+                historyList.appendChild(item);
+            });
+        }
+
+        // 格式化时间
+        function formatTime(date) {
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return '刚刚';
+            if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+            if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+            if (diff < 604800000) return Math.floor(diff / 86400000) + '天前';
+            
+            return date.toLocaleDateString('zh-CN');
+        }
+
+        // 创建新会话
+        async function createNewSession(switchToChat = true) {
+            try {
+                const response = await fetch('/sessions/new', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.session_id) {
+                    currentSessionId = data.session_id;
+                    clearChatMessages();
+                    
+                    if (switchToChat) {
+                        showChatInterface();
+                    }
+                    
+                    await loadSessions();
+                }
+            } catch (error) {
+                console.error('Create session error:', error);
+            }
+        }
+
+        // 删除会话
+        async function deleteSession(sessionId) {
+            if (!confirm('确定要删除这个对话吗？')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/sessions/${sessionId}`, { method: 'DELETE' });
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    // 如果删除的是当前会话，返回欢迎页
+                    if (sessionId === currentSessionId) {
+                        showWelcomePage();
+                    }
+                    await loadSessions();
+                } else {
+                    alert(data.error || '删除失败');
+                }
+            } catch (error) {
+                console.error('Delete session error:', error);
+            }
+        }
+
+        // 切换会话
+        async function switchToSession(sessionId) {
+            if (sessionId === currentSessionId && !isWelcomeMode) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/sessions/${sessionId}/switch`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    currentSessionId = sessionId;
+                    clearChatMessages();
+                    await loadSessionHistory(sessionId);
+                    showChatInterface();
+                    await loadSessions();
+                }
+            } catch (error) {
+                console.error('Switch session error:', error);
+            }
+        }
+
+        // 加载会话历史消息
+        async function loadSessionHistory(sessionId) {
+            try {
+                const response = await fetch(`/sessions/${sessionId}/info`);
+                const data = await response.json();
+                
+                if (data.messages) {
+                    clearChatMessages();
+                    data.messages.forEach(msg => {
+                        addMessage(msg.content, msg.role);
+                    });
+                }
+            } catch (error) {
+                console.error('Load session history error:', error);
+            }
+        }
+
+        // 清空聊天消息
+        function clearChatMessages() {
+            const messages = chatMessages.querySelectorAll('.message');
+            messages.forEach(msg => msg.remove());
+        }
+
+        // ==================== 事件绑定 ====================
+
+        // 欢迎页输入框发送
+        welcomeSendBtn.addEventListener('click', () => {
+            const content = welcomeInput.value.trim();
+            if (content) {
+                sendMessageWithInput(content, true);
+                welcomeInput.value = '';
+            }
+        });
+
+        welcomeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const content = welcomeInput.value.trim();
+                if (content) {
+                    sendMessageWithInput(content, true);
+                    welcomeInput.value = '';
+                }
+            }
+        });
+
+        // 侧边栏新建按钮
+        newChatBtnSidebar.addEventListener('click', () => {
+            showWelcomePage();
+            welcomeInput.focus();
+        });
+
+        // 聊天界面发送
         sendButton.addEventListener('click', sendMessage);
         stopButton.addEventListener('click', stopGeneration);
         
         messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
         });
 
-        messageInput.focus();
+        // 初始化
+        loadSessions();
     </script>
 </body>
 </html>
