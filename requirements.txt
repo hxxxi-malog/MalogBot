@@ -18,5 +18,12 @@ python-dotenv>=1.0.0
 # 工具扩展
 langchain-community>=0.3.0
 
+# HTTP 客户端（用于百度云 MCP 调用）
+httpx>=0.25.0
+
+# MCP 集成（可选，用于其他 MCP 服务器）
+# langchain-mcp-adapters>=0.0.4
+# mcp>=1.0.0
+
 # LangSmith 可视化追踪
 langsmith>=0.1.0
