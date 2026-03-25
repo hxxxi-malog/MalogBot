@@ -127,6 +127,10 @@ class TodoManager:
             key=lambda x: status_order.get(x["status"], 99)
         )
         
+        # 找到当前进行中的任务和下一个待处理任务
+        current_task = None
+        next_pending_task = None
+        
         for item in sorted_items:
             status = item["status"]
             text = item["text"]
@@ -135,12 +139,15 @@ class TodoManager:
             # 状态图标
             if status == self.STATUS_IN_PROGRESS:
                 icon = "🔄"
+                current_task = item
             elif status == self.STATUS_COMPLETED:
                 icon = "✅"
             elif status == self.STATUS_CANCELLED:
                 icon = "❌"
             else:  # pending
                 icon = "⏳"
+                if next_pending_task is None:
+                    next_pending_task = item
             
             lines.append(f"{icon} [{task_id}] {text} ({status})")
         
@@ -152,6 +159,18 @@ class TodoManager:
         
         lines.append("")
         lines.append(f"📊 统计: 总计 {total} | 进行中 {in_progress} | 待处理 {pending} | 已完成 {completed}")
+        
+        # 添加下一步行动提示
+        if current_task:
+            lines.append("")
+            lines.append(f"💡 当前任务: [{current_task['id']}] {current_task['text']}")
+            lines.append("   完成后请立即调用 todo_manager 更新状态为 completed")
+        elif next_pending_task and in_progress == 0:
+            # 没有进行中的任务但有待处理的任务，提示开始下一个
+            lines.append("")
+            lines.append(f"⚠️ 注意: 有 {pending} 个待处理任务但没有进行中的任务")
+            lines.append(f"   请开始执行 [{next_pending_task['id']}] {next_pending_task['text']}")
+            lines.append("   并调用 todo_manager 将其状态更新为 in_progress")
         
         result = "\n".join(lines)
         self._last_rendered = result
@@ -305,20 +324,27 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
     """
     管理任务列表，用于跟踪复杂任务的进度。
     
-    使用场景：
+    **使用场景：**
     - 任务复杂，需要拆分为多个步骤时
     - 需要在多个工具调用之间保持任务上下文时
     - 用户明确要求跟踪任务进度时
     
-    不使用场景：
+    **不使用场景：**
     - 简单的单步任务（如"查看当前目录"）
     - 一次性查询或简单对话
     
-    状态说明：
+    **状态说明：**
     - pending: 待处理
     - in_progress: 进行中（同一时间只能有一个）
     - completed: 已完成
     - cancelled: 已取消
+    
+    **⚠️ 重要规则：每完成一个任务步骤后，必须立即调用此工具更新状态！**
+    
+    **调用时机：**
+    1. 开始复杂任务时：创建任务列表，第一个任务设为 in_progress
+    2. 完成一个步骤后：将当前任务设为 completed，下一个任务设为 in_progress
+    3. 任务取消或失败时：更新相应任务状态
     
     Args:
         items: 任务列表，每个任务包含：
