@@ -20,11 +20,34 @@ from config import Config
 # 子Agent专用系统提示词（简洁，专注于执行）
 SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责是完成分配给你的单一任务。
 
-## 核心规则
+## ⚠️ 最高优先级规则
 
-1. **只执行当前任务**：不要扩展任务范围
-2. **使用可用工具**：你可以执行bash命令、管理任务、搜索网络等
-3. **返回简洁摘要**：完成后提供执行结果摘要
+1. **严格任务边界**：只执行任务描述中明确要求的内容，不要做任何"顺便"或"额外"的操作
+2. **完成即停止**：任务完成后立即返回结果，不要继续探索或优化
+3. **遇到障碍即停止**：如果无法完成，立即返回失败报告，不要尝试替代方案
+
+## 任务完成判断标准
+
+在每次工具调用前，问自己：
+- 这个操作是完成任务**必需**的吗？
+- 任务的核心目标是什么？我是否已经达成？
+
+**任务完成的信号：**
+- 收集到了需要的信息
+- 创建/修改了指定的文件
+- 执行了要求的命令并得到预期结果
+
+**立即停止的信号：**
+- 已获取核心结果 → 停止并返回
+- 遇到错误无法继续 → 停止并报告失败
+- 发现需要超出任务范围的权限/资源 → 停止并报告
+
+## 步数预算警告
+
+你有最多 **{max_steps} 步**的执行预算。
+- 每次工具调用消耗 1 步
+- **在剩余 10 步时，必须开始收尾**
+- **在剩余 5 步时，必须立即返回当前结果**
 
 ## 可用能力
 
@@ -32,12 +55,12 @@ SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责
 - **web_search**: 联网搜索信息（如果可用）
 - **todo_manager**: 管理任务列表（如果需要拆分子任务）
 
-## 执行流程
+## 执行流程（严格遵守）
 
-1. 理解任务目标
-2. 规划执行步骤
-3. 逐步调用工具执行
-4. 汇总结果返回
+1. **理解任务目标**：明确任务的核心要求
+2. **最小化执行**：规划最少的步骤完成任务
+3. **逐步执行**：每一步都要问"这有必要吗？"
+4. **及时返回**：达成目标后立即返回
 
 ## 输出格式
 
@@ -61,6 +84,7 @@ SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责
 - 如果任务需要用户确认（如写入文件），执行后会等待确认
 - 遇到错误时，说明错误原因和建议的解决方案
 - 保持摘要简洁，不要返回过长的中间过程
+- **禁止**在任务完成后继续探索相关内容
 """
 
 
@@ -73,6 +97,7 @@ class SubAgentExecutor:
     2. 子agent不能创建子agent
     3. 执行结果被正确摘要返回
     4. 每个子agent实例有独立的步数限制
+    5. 实时监控执行过程，防止偏离任务
     """
     
     # 子agent的最大递归限制（每个子agent实例独立计数）
@@ -80,6 +105,10 @@ class SubAgentExecutor:
     
     # 子agent执行超时限制（防止无限执行）
     MAX_EXECUTION_TIME = 180  # 秒
+    
+    # 步数警告阈值
+    WARNING_THRESHOLD = 20  # 剩余步数低于此值时发出警告
+    CRITICAL_THRESHOLD = 10  # 剩余步数低于此值时强制收尾
     
     def __init__(self, available_tools: List):
         """
@@ -91,6 +120,8 @@ class SubAgentExecutor:
         self.tools = available_tools
         # 创建子agent专用的LLM实例（非流式，因为是内部执行）
         self.llm = get_llm(streaming=False)
+        # 执行步数计数器
+        self._step_count = 0
     
     def execute(self, task_description: str, context: str = "") -> Dict[str, Any]:
         """
@@ -107,6 +138,9 @@ class SubAgentExecutor:
             - tool_calls: 工具调用列表
             - error: 错误信息（如果失败）
         """
+        # 重置步数计数器
+        self._step_count = 0
+        
         # 构建纯净的消息列表
         messages = self._build_messages(task_description, context)
         
@@ -116,19 +150,36 @@ class SubAgentExecutor:
         # 收集执行信息
         tool_calls = []
         execution_log = []
+        final_messages = list(messages)  # 复制消息列表用于流式更新
+        result = None  # 初始化 result 变量
         
         try:
-            # 执行子agent
-            result = sub_agent.invoke(
+            # 使用流式执行，可以监控每一步
+            for chunk in sub_agent.stream(
                 {"messages": messages},
+                stream_mode=["updates", "messages"],
                 config={"recursion_limit": self.SUB_AGENT_RECURSION_LIMIT}
-            )
-            
-            # 提取AI消息和工具调用
-            if result and "messages" in result:
-                for msg in result["messages"]:
+            ):
+                # chunk 是 (stream_mode, data) 元组
+                if isinstance(chunk, tuple):
+                    mode, data = chunk
+                else:
+                    continue
+                
+                # 更新消息列表
+                if mode == "updates" and isinstance(data, dict):
+                    if "messages" in data:
+                        final_messages = data["messages"]
+                
+                # 检测工具调用并计数
+                if mode == "messages":
+                    # data 可能是 (message, metadata) 元组
+                    if isinstance(data, tuple) and len(data) >= 1:
+                        msg = data[0]
+                    else:
+                        msg = data
+                    
                     if isinstance(msg, AIMessage):
-                        # 检查是否有工具调用
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
                             for tc in msg.tool_calls:
                                 tool_calls.append({
@@ -136,33 +187,78 @@ class SubAgentExecutor:
                                     "args": tc.get("args", {}),
                                     "id": tc.get("id", "")
                                 })
-                
-                # 获取最终的AI消息
-                final_message = self._extract_final_message(result)
-                
-                return {
-                    "success": True,
-                    "summary": final_message,
-                    "tool_calls": tool_calls,
-                    "execution_log": execution_log,
-                    "error": None
-                }
+                                self._step_count += 1
+                                
+                                # 检查步数并注入警告
+                                remaining = self.SUB_AGENT_RECURSION_LIMIT - self._step_count
+                                if remaining <= self.CRITICAL_THRESHOLD:
+                                    # 注入强制收尾提醒
+                                    warning_msg = HumanMessage(
+                                        content=f"⚠️ 步数警告：剩余 {remaining} 步！请立即返回当前结果，不要再进行新的工具调用。"
+                                    )
+                                    final_messages.append(warning_msg)
+                                    # 重新调用 agent 让它处理警告
+                                    break
+                                elif remaining <= self.WARNING_THRESHOLD:
+                                    # 注入警告
+                                    warning_msg = HumanMessage(
+                                        content=f"⚠️ 步数提醒：剩余 {remaining} 步。请开始收尾，只执行必要的操作。"
+                                    )
+                                    final_messages.append(warning_msg)
+            
+            # 如果因为步数警告退出，需要重新执行让 agent 收尾
+            if self._step_count >= self.SUB_AGENT_RECURSION_LIMIT - self.CRITICAL_THRESHOLD:
+                # 用带警告的消息重新执行一次
+                result = sub_agent.invoke(
+                    {"messages": final_messages},
+                    config={"recursion_limit": self.SUB_AGENT_RECURSION_LIMIT - self._step_count + 5}
+                )
+                if result and "messages" in result:
+                    final_messages = result["messages"]
+            
+            # 提取AI消息和工具调用
+            result_messages = final_messages
+            if result and "messages" in result:
+                result_messages = result["messages"]
+            
+            # 收集所有工具调用
+            for msg in result_messages:
+                if isinstance(msg, AIMessage):
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            tc_info = {
+                                "name": tc.get("name", "unknown"),
+                                "args": tc.get("args", {}),
+                                "id": tc.get("id", "")
+                            }
+                            if tc_info not in tool_calls:
+                                tool_calls.append(tc_info)
+            
+            # 获取最终的AI消息
+            final_message = self._extract_final_message({"messages": result_messages})
+            
+            # 检查是否因为步数限制而"部分完成"
+            steps_used = result.get("steps_used", self._step_count) if result else self._step_count
+            is_partial = steps_used >= self.SUB_AGENT_RECURSION_LIMIT - self.CRITICAL_THRESHOLD
             
             return {
-                "success": False,
-                "summary": "未能获取执行结果",
+                "success": True,
+                "summary": final_message,
                 "tool_calls": tool_calls,
                 "execution_log": execution_log,
-                "error": "Empty result from sub-agent"
+                "error": None,
+                "steps_used": self._step_count,
+                "is_partial": is_partial
             }
             
         except GraphRecursionError:
             return {
                 "success": False,
-                "summary": f"子Agent达到最大执行步数限制（{self.SUB_AGENT_RECURSION_LIMIT}步）",
+                "summary": f"子Agent达到最大执行步数限制（{self.SUB_AGENT_RECURSION_LIMIT}步）。已执行 {self._step_count} 次工具调用。",
                 "tool_calls": tool_calls,
                 "execution_log": execution_log,
-                "error": "Recursion limit exceeded"
+                "error": "Recursion limit exceeded",
+                "steps_used": self._step_count
             }
             
         except Exception as e:
@@ -171,7 +267,8 @@ class SubAgentExecutor:
                 "summary": f"执行出错: {str(e)}",
                 "tool_calls": tool_calls,
                 "execution_log": execution_log,
-                "error": str(e)
+                "error": str(e),
+                "steps_used": self._step_count
             }
     
     def _build_messages(self, task_description: str, context: str = "") -> List:
@@ -185,12 +282,31 @@ class SubAgentExecutor:
         Returns:
             消息列表
         """
+        # 填充步数预算到系统提示词
+        system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
+            max_steps=self.SUB_AGENT_RECURSION_LIMIT
+        )
+        
         messages = [
-            SystemMessage(content=SUB_AGENT_SYSTEM_PROMPT)
+            SystemMessage(content=system_prompt)
         ]
         
-        # 构建用户消息
-        user_content = f"## 任务\n{task_description}"
+        # 构建用户消息，添加任务边界提醒
+        user_content = f"""## 任务
+{task_description}
+
+## ⚠️ 执行提醒
+- 你的执行预算: **{self.SUB_AGENT_RECURSION_LIMIT} 步**（每次工具调用消耗 1 步）
+- 严格限定在任务范围内，不要扩展
+- 完成后立即返回，不要继续探索
+- 剩余步数少于 10 步时，系统会强制你返回结果
+
+## 任务完成标准
+请明确以下问题后再开始执行：
+1. 任务的核心目标是什么？
+2. 最少需要几个步骤完成？
+3. 什么情况算"完成"？"""
+        
         if context:
             user_content += f"\n\n## 上下文\n{context}"
         
@@ -335,10 +451,21 @@ def spawn_sub_agent(task: str, context: str = "") -> str:
     # 格式化返回结果 - 状态必须非常明确
     output_lines = ["## 子Agent执行报告", ""]
     
+    # 步数使用情况
+    steps_used = result.get("steps_used", 0)
+    max_steps = SubAgentExecutor.SUB_AGENT_RECURSION_LIMIT
+    output_lines.append(f"**步数使用**: {steps_used}/{max_steps}")
+    
     # 状态标识（使用醒目的格式）
+    is_partial = result.get("is_partial", False)
+    
     if result["success"]:
-        output_lines.append("## ✅ 执行状态: 成功")
-        status_hint = "任务已成功完成，可以标记为 completed"
+        if is_partial:
+            output_lines.append("## ⚠️ 执行状态: 部分完成（因步数限制中断）")
+            status_hint = "任务部分完成，可能需要继续执行。请检查执行摘要确认完成情况"
+        else:
+            output_lines.append("## ✅ 执行状态: 成功")
+            status_hint = "任务已成功完成，可以标记为 completed"
     else:
         output_lines.append("## ❌ 执行状态: 失败")
         status_hint = "任务执行失败，请勿标记为 completed！需要重试或调整方案"
