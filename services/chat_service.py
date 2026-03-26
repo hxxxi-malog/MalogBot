@@ -37,6 +37,7 @@ from agent.tools.sub_agent import (
     set_sub_agent_session,
     clear_session_tools
 )
+from agent.tools.skills import SKILLS_TOOLS
 from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
@@ -58,12 +59,14 @@ class ChatService:
         # 基础工具（始终可用）
         # 包含 todo_manager 和 get_todo_status 用于任务管理
         # 包含 spawn_sub_agent 用于创建子agent执行任务
+        # 包含 skills 工具用于使用预定义技能
         self.base_tools = [
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
-            spawn_sub_agent  # 主agent可以创建子agent
+            spawn_sub_agent,  # 主agent可以创建子agent
+            *SKILLS_TOOLS  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
         ]
         
         # 子agent可用的工具（不包含 spawn_sub_agent，防止无限递归）
@@ -71,7 +74,8 @@ class ChatService:
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
-            get_todo_status
+            get_todo_status,
+            *SKILLS_TOOLS  # 子agent也可以使用技能工具
         ]
         
         # 创建支持工具调用的Agent（使用基础工具）
