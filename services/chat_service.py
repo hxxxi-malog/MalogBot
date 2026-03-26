@@ -31,6 +31,12 @@ from agent.tools.todo_manager import (
     remove_todo_manager,
     set_current_session
 )
+from agent.tools.sub_agent import (
+    spawn_sub_agent,
+    set_sub_agent_tools,
+    set_sub_agent_session,
+    clear_session_tools
+)
 from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
@@ -51,7 +57,17 @@ class ChatService:
         
         # 基础工具（始终可用）
         # 包含 todo_manager 和 get_todo_status 用于任务管理
+        # 包含 spawn_sub_agent 用于创建子agent执行任务
         self.base_tools = [
+            execute_bash,
+            get_bash_tool_detailed_usage,
+            todo_manager,
+            get_todo_status,
+            spawn_sub_agent  # 主agent可以创建子agent
+        ]
+        
+        # 子agent可用的工具（不包含 spawn_sub_agent，防止无限递归）
+        self.sub_agent_tools = [
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
@@ -76,7 +92,7 @@ class ChatService:
         # key: session_id, value: {"messages": [...], "last_user_input": "..."}
         self._recursion_pause_states: Dict[str, Dict[str, Any]] = {}
     
-    def _get_tools_for_session(self, session_id: str) -> List:
+    def _get_tools_for_session(self, session_id: str, include_sub_agent: bool = True) -> List:
         """
         获取会话可用的工具列表
         
@@ -84,11 +100,16 @@ class ChatService:
         
         Args:
             session_id: 会话ID
+            include_sub_agent: 是否包含 spawn_sub_agent 工具（子agent不包含）
             
         Returns:
             工具列表
         """
-        tools = list(self.base_tools)  # 复制基础工具
+        # 根据是否是子agent选择基础工具集
+        if include_sub_agent:
+            tools = list(self.base_tools)  # 主agent：包含 spawn_sub_agent
+        else:
+            tools = list(self.sub_agent_tools)  # 子agent：不包含 spawn_sub_agent
         
         # 检查会话是否启用联网搜索
         web_search_enabled = session_store.get_web_search_enabled(session_id)
@@ -116,15 +137,8 @@ class ChatService:
         Returns:
             Agent 实例
         """
-        tools = self._get_tools_for_session(session_id)
-        
-        # 使用工具列表的长度和类型作为缓存键
-        # 这样可以在工具变化时自动创建新的 Agent
-        cache_key = f"{session_id}_{len(tools)}_{[t.name for t in tools]}"
-        
-        # 简单起见，每次都检查工具配置是否变化
-        # 如果性能有问题，可以优化缓存策略
-        current_tools = self._get_tools_for_session(session_id)
+        # 获取主agent的工具（包含spawn_sub_agent）
+        current_tools = self._get_tools_for_session(session_id, include_sub_agent=True)
         
         # 直接创建新的 Agent（确保工具配置正确）
         return create_react_agent(self.llm, current_tools)
@@ -166,6 +180,8 @@ class ChatService:
         """
         # 清理会话的 TodoManager
         remove_todo_manager(session_id)
+        # 清理会话的子Agent工具配置
+        clear_session_tools(session_id)
         return session_store.delete_session(session_id)
 
     def get_all_sessions(self) -> List[Dict]:
@@ -226,6 +242,11 @@ class ChatService:
         try:
             # 设置当前会话ID（供工具使用）
             set_current_session(session_id)
+            set_sub_agent_session(session_id)
+            
+            # 设置子agent可用的工具（不包含spawn_sub_agent）
+            sub_tools = self._get_tools_for_session(session_id, include_sub_agent=False)
+            set_sub_agent_tools(sub_tools, session_id)  # 传入session_id
             
             # 检查是否需要注入任务提醒（问责机制）
             todo_mgr = get_todo_manager(session_id)
@@ -342,6 +363,11 @@ class ChatService:
         try:
             # 设置当前会话ID（供工具使用）
             set_current_session(session_id)
+            set_sub_agent_session(session_id)
+            
+            # 设置子agent可用的工具（不包含spawn_sub_agent）
+            sub_tools = self._get_tools_for_session(session_id, include_sub_agent=False)
+            set_sub_agent_tools(sub_tools, session_id)  # 传入session_id
             
             # 检查是否需要注入任务提醒（问责机制）
             todo_mgr = get_todo_manager(session_id)
