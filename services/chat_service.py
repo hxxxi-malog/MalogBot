@@ -31,6 +31,11 @@ from agent.tools.todo_manager import (
     remove_todo_manager,
     set_current_session
 )
+from agent.tools.task_manager import (
+    TASK_MANAGER_TOOLS,
+    get_task_manager,
+    remove_task_manager
+)
 from agent.tools.sub_agent import (
     spawn_sub_agent,
     set_sub_agent_tools,
@@ -57,7 +62,8 @@ class ChatService:
         self.llm = get_llm(streaming=True)
         
         # 基础工具（始终可用）
-        # 包含 todo_manager 和 get_todo_status 用于任务管理
+        # 包含 todo_manager 和 get_todo_status 用于简单线性任务管理
+        # 包含 task_manager 工具用于复杂任务编排（依赖关系）
         # 包含 spawn_sub_agent 用于创建子agent执行任务
         # 包含 skills 工具用于使用预定义技能
         self.base_tools = [
@@ -65,16 +71,19 @@ class ChatService:
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            *TASK_MANAGER_TOOLS,  # 任务编排工具：task_create, task_update, task_get_ready 等
             spawn_sub_agent,  # 主agent可以创建子agent
             *SKILLS_TOOLS  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
         ]
         
         # 子agent可用的工具（不包含 spawn_sub_agent，防止无限递归）
+        # 子agent也可以使用任务管理工具
         self.sub_agent_tools = [
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            *TASK_MANAGER_TOOLS,  # 子agent也可以使用任务编排
             *SKILLS_TOOLS  # 子agent也可以使用技能工具
         ]
         
@@ -184,6 +193,8 @@ class ChatService:
         """
         # 清理会话的 TodoManager
         remove_todo_manager(session_id)
+        # 清理会话的 TaskManager（注意：不删除磁盘上的任务文件，保留持久化数据）
+        remove_task_manager(session_id)
         # 清理会话的子Agent工具配置
         clear_session_tools(session_id)
         return session_store.delete_session(session_id)

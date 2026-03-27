@@ -246,7 +246,44 @@ def get_skill_template(skill_name: str, template_file: str = "report_template.md
     Returns:
         模板内容
     """
-    return get_skill_reference(skill_name, template_file)
+    # 直接实现，不调用另一个 tool
+    skill_path = get_skill_path(skill_name)
+    
+    if not skill_path:
+        return json.dumps({
+            "success": False,
+            "message": f"技能 '{skill_name}' 不存在。"
+        }, ensure_ascii=False)
+    
+    template_path = skill_path / template_file
+    
+    if not template_path.exists():
+        # 列出可用的模板文件
+        available_files = []
+        for f in skill_path.iterdir():
+            if f.is_file() and f.suffix == '.md':
+                available_files.append(f.name)
+        
+        return json.dumps({
+            "success": False,
+            "message": f"模板文件 '{template_file}' 不存在。",
+            "available_files": available_files
+        }, ensure_ascii=False)
+    
+    try:
+        content = template_path.read_text(encoding='utf-8')
+        
+        return json.dumps({
+            "success": True,
+            "skill_name": skill_name,
+            "file_name": template_file,
+            "content": content
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "message": f"读取模板文件失败: {str(e)}"
+        }, ensure_ascii=False)
 
 
 # 导出工具列表
