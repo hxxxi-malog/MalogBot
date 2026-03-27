@@ -1,0 +1,14 @@
+{
+  "name": "xfg-zsxq-auto",
+  "version": "1.0.0",
+  "description": "知识星球自动化发帖工具",
+  "main": "scripts/zsxq-auto-post.js",
+  "scripts": {
+    "post": "node scripts/zsxq-auto-post.js"
+  },
+  "dependencies": {
+    "puppeteer": "^21.0.0"
+  },
+  "author": "xiaofuge",
+  "license": "MIT"
+}
