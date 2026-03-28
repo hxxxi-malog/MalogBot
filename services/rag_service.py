@@ -96,9 +96,9 @@ class RAGService:
         limit: int
     ) -> List[Dict[str, Any]]:
         """
-        向量检索
+        向量检索 - 使用 HNSW 索引加速
 
-        使用 PostgreSQL 的向量相似度搜索
+        使用 PostgreSQL pgvector 的向量相似度搜索
 
         Args:
             query_embedding: 查询向量
@@ -109,16 +109,77 @@ class RAGService:
             检索结果列表
         """
         try:
-            with db_manager.get_session() as session:
-                # 获取该知识库的所有分块
-                logger.info(f"[RAG Service] 查询知识库分块: kb_id={knowledge_base_id}")
-                chunks = session.query(DocumentChunk).filter_by(
-                    knowledge_base_id=knowledge_base_id
-                ).all()
+            # 将查询向量转换为字符串格式
+            embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
+            
+            with db_manager.engine.connect() as conn:
+                # 使用 pgvector 的余弦距离搜索
+                # HNSW 索引会自动加速此查询
+                # 注意：使用字符串格式化而非参数绑定来处理向量
+                result = conn.execute(text(f"""
+                    SELECT 
+                        id, document_id, content, chunk_metadata,
+                        1 - (embedding <=> '{embedding_str}'::vector) as similarity
+                    FROM document_chunks
+                    WHERE knowledge_base_id = '{knowledge_base_id}'
+                    AND embedding IS NOT NULL
+                    ORDER BY embedding <=> '{embedding_str}'::vector
+                    LIMIT {limit}
+                """))
                 
-                logger.info(f"[RAG Service] 找到 {len(chunks)} 个分块")
+                rows = result.fetchall()
+                logger.info(f"[RAG Service] HNSW 检索找到 {len(rows)} 个结果")
+                
+                results = []
+                for row in rows:
+                    results.append({
+                        'id': str(row[0]),
+                        'content': row[2],
+                        'score': float(row[4]) if row[4] else 0.0,
+                        'metadata': row[3],
+                        'document_id': str(row[1])
+                    })
+                
+                return results
 
-                if not chunks:
+        except Exception as e:
+            logger.error(f"Vector search error: {str(e)}")
+            # 回退到原始方法
+            return await self._vector_search_fallback(query_embedding, knowledge_base_id, limit)
+    
+    async def _vector_search_fallback(
+        self,
+        query_embedding: List[float],
+        knowledge_base_id: str,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """
+        向量检索回退方法（Python 计算）
+
+        当 pgvector 搜索失败时使用
+
+        Args:
+            query_embedding: 查询向量
+            knowledge_base_id: 知识库ID
+            limit: 返回数量
+
+        Returns:
+            检索结果列表
+        """
+        try:
+            with db_manager.engine.connect() as conn:
+                # 使用原生 SQL 查询获取分块
+                result = conn.execute(text("""
+                    SELECT id, document_id, content, chunk_metadata, embedding
+                    FROM document_chunks
+                    WHERE knowledge_base_id = :kb_id
+                    AND embedding IS NOT NULL
+                """), {'kb_id': knowledge_base_id})
+                
+                rows = result.fetchall()
+                logger.info(f"[RAG Service] 回退方法找到 {len(rows)} 个分块")
+
+                if not rows:
                     return []
 
                 # 计算相似度
@@ -126,17 +187,21 @@ class RAGService:
                 query_vec = np.array(query_embedding)
                 query_norm = np.linalg.norm(query_vec)
 
-                for chunk in chunks:
-                    if chunk.embedding:
-                        chunk_vec = np.array(chunk.embedding)
+                for row in rows:
+                    chunk_embedding = row[4]  # embedding 列
+                    if chunk_embedding is not None:
+                        # 处理不同类型的 embedding 数据
+                        if hasattr(chunk_embedding, '__iter__') and not isinstance(chunk_embedding, str):
+                            chunk_vec = np.array(list(chunk_embedding))
+                        else:
+                            continue
+                            
                         chunk_norm = np.linalg.norm(chunk_vec)
 
                         if chunk_norm > 0 and query_norm > 0:
                             # 余弦相似度
                             similarity = np.dot(query_vec, chunk_vec) / (query_norm * chunk_norm)
-                            chunk_scores.append((chunk, similarity))
-                    else:
-                        logger.warning(f"[RAG Service] 分块 {chunk.id} 没有向量")
+                            chunk_scores.append((row, similarity))
 
                 logger.info(f"[RAG Service] 计算了 {len(chunk_scores)} 个分块的相似度")
 
@@ -145,19 +210,19 @@ class RAGService:
 
                 # 返回 top_n 结果
                 results = []
-                for chunk, score in chunk_scores[:limit]:
+                for row, score in chunk_scores[:limit]:
                     results.append({
-                        'id': str(chunk.id),
-                        'content': chunk.content,
+                        'id': str(row[0]),
+                        'content': row[2],
                         'score': float(score),
-                        'metadata': chunk.chunk_metadata,
-                        'document_id': str(chunk.document_id)
+                        'metadata': row[3],
+                        'document_id': str(row[1])
                     })
 
                 return results
 
         except Exception as e:
-            logger.error(f"Vector search error: {str(e)}")
+            logger.error(f"Vector search fallback error: {str(e)}")
             return []
 
     async def search_with_context(

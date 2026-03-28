@@ -731,7 +731,13 @@ def upload_document(kb_id: str):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        result = loop.run_until_complete(process_doc())
+        try:
+            result = loop.run_until_complete(process_doc())
+        except Exception as e:
+            # 数据库操作异常
+            return jsonify({
+                'error': f'文档处理失败: {str(e)}'
+            }), 500
         
         if result.get('status') == 'completed':
             return jsonify({

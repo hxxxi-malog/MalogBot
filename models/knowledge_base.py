@@ -14,6 +14,14 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy import Float
 
+# 导入 pgvector 的 Vector 类型
+try:
+    from pgvector.sqlalchemy import Vector
+    HAS_PGVECTOR = True
+except ImportError:
+    HAS_PGVECTOR = False
+    Vector = None
+
 from models.database import Base
 
 
@@ -98,9 +106,11 @@ class DocumentChunk(Base):
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey('knowledge_bases.id', ondelete='CASCADE'), nullable=False)
     chunk_index = Column(Integer, nullable=False)  # 分块在文档中的索引
     content = Column(Text, nullable=False)  # 分块内容
-    embedding = Column(ARRAY(Float), nullable=True)  # 向量（PostgreSQL 数组类型）
     chunk_metadata = Column(Text, nullable=True)  # JSON 格式的元数据（使用 chunk_metadata 避免与 SQLAlchemy 的 metadata 冲突）
     created_at = Column(DateTime, default=func.now(), nullable=False)
+    
+    # embedding 列单独处理，不在模型中定义
+    # 使用原生 SQL 进行向量操作，避免 psycopg2 类型问题
 
     # 关系
     document = relationship("Document", back_populates="chunks")

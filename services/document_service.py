@@ -11,7 +11,8 @@ import uuid
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sqlalchemy import text as sql_text
 
 from config import Config
 from services.db_manager import db_manager
@@ -151,80 +152,88 @@ class DocumentService:
         Returns:
             处理结果字典
         """
+        # 第一阶段：预处理（在事务外进行，避免长事务）
+        # 提取文本
+        extracted_text = self.extract_text_from_file(file_path)
+        if not extracted_text:
+            return {
+                'status': 'failed',
+                'error': '无法提取文本内容'
+            }
+
+        # 分块
+        chunks = self.split_text(extracted_text)
+        if not chunks:
+            return {
+                'status': 'failed',
+                'error': '文本分块失败'
+            }
+
+        # 批量获取向量（可能耗时的网络操作，在事务外进行）
+        embeddings = await embedding_service.get_embeddings(chunks)
+        if not embeddings or len(embeddings) != len(chunks):
+            return {
+                'status': 'failed',
+                'error': '向量化失败'
+            }
+
+        # 第二阶段：数据库操作（短事务）
+        document_id = uuid.uuid4()
+        
         with db_manager.get_session() as session:
             try:
                 # 创建文档记录
                 document = Document(
-                    id=uuid.uuid4(),
+                    id=document_id,
                     knowledge_base_id=knowledge_base_id,
                     filename=filename,
                     file_path=file_path,
                     file_type=Path(filename).suffix.lower(),
                     file_size=os.path.getsize(file_path),
-                    status='processing'
+                    status='processing',
+                    content=extracted_text,
+                    chunk_count=len(chunks)
                 )
                 session.add(document)
                 session.flush()  # 获取 document.id
 
-                # 提取文本
-                text = self.extract_text_from_file(file_path)
-                if not text:
-                    document.status = 'failed'
-                    document.error_message = '无法提取文本内容'
-                    return {
-                        'status': 'failed',
-                        'error': '无法提取文本内容'
-                    }
-
-                document.content = text
-
-                # 分块
-                chunks = self.split_text(text)
-                if not chunks:
-                    document.status = 'failed'
-                    document.error_message = '文本分块失败'
-                    return {
-                        'status': 'failed',
-                        'error': '文本分块失败'
-                    }
-
-                # 批量获取向量
-                embeddings = await embedding_service.get_embeddings(chunks)
-
-                if not embeddings or len(embeddings) != len(chunks):
-                    document.status = 'failed'
-                    document.error_message = '向量化失败'
-                    return {
-                        'status': 'failed',
-                        'error': '向量化失败'
-                    }
-
-                # 保存分块
+                # 保存分块（使用原生 SQL 以支持 vector 类型）
                 for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                    chunk_record = DocumentChunk(
-                        id=uuid.uuid4(),
-                        document_id=document.id,
-                        knowledge_base_id=knowledge_base_id,
-                        chunk_index=i,
-                        content=chunk,
-                        embedding=embedding,
-                        chunk_metadata=json.dumps({
-                            'filename': filename,
-                            'chunk_index': i,
-                            'total_chunks': len(chunks)
-                        })
-                    )
-                    session.add(chunk_record)
+                    chunk_id = str(uuid.uuid4())
+                    embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                    metadata_json = json.dumps({
+                        'filename': filename,
+                        'chunk_index': i,
+                        'total_chunks': len(chunks)
+                    })
+                    
+                    # 使用字符串格式化处理 vector 类型转换，避免 SQLAlchemy 参数绑定冲突
+                    # 注意：embedding_str 是我们控制的数值数组字符串，不存在注入风险
+                    insert_sql = f"""
+                        INSERT INTO document_chunks 
+                        (id, document_id, knowledge_base_id, chunk_index, content, embedding, chunk_metadata, created_at)
+                        VALUES (:id, :doc_id, :kb_id, :idx, :content, '{embedding_str}'::vector, :metadata, NOW())
+                    """
+                    session.execute(sql_text(insert_sql), {
+                        'id': chunk_id,
+                        'doc_id': str(document.id),
+                        'kb_id': knowledge_base_id,
+                        'idx': i,
+                        'content': chunk,
+                        'metadata': metadata_json
+                    })
 
                 # 更新文档状态
                 document.status = 'completed'
-                document.chunk_count = len(chunks)
 
-                # 更新知识库统计
-                kb = session.query(KnowledgeBase).filter_by(id=knowledge_base_id).first()
-                if kb:
-                    kb.document_count += 1
-                    kb.chunk_count += len(chunks)
+                # 更新知识库统计（使用原生 SQL）
+                session.execute(sql_text("""
+                    UPDATE knowledge_bases 
+                    SET document_count = document_count + 1, 
+                        chunk_count = chunk_count + :chunk_count,
+                        updated_at = NOW()
+                    WHERE id = :kb_id
+                """), {'chunk_count': len(chunks), 'kb_id': knowledge_base_id})
 
                 return {
                     'status': 'completed',
@@ -234,10 +243,8 @@ class DocumentService:
 
             except Exception as e:
                 logger.error(f"Error processing document: {str(e)}")
-                return {
-                    'status': 'failed',
-                    'error': str(e)
-                }
+                # 事务会自动回滚，不需要手动处理
+                raise e
 
     def get_supported_file_types(self) -> List[str]:
         """

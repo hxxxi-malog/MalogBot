@@ -16,6 +16,13 @@ from sqlalchemy.pool import QueuePool
 from config import Config
 from models.database import Base
 
+# 注册 pgvector 类型适配器
+try:
+    from services.pgvector_adapter import register_vector_adapter
+    register_vector_adapter()
+except ImportError:
+    pass
+
 
 class DatabaseManager:
     """数据库管理器"""
