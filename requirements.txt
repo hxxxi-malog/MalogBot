@@ -44,3 +44,6 @@ werkzeug>=3.0.0
 # RAGAS 评估框架
 ragas>=0.1.0
 datasets>=2.14.0
+
+# pgvector 向量数据库支持
+pgvector>=0.2.0
