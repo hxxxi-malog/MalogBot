@@ -21,7 +21,7 @@ pyyaml>=6.0
 # 工具扩展
 langchain-community>=0.3.0
 
-# HTTP 客户端（用于百度云 MCP 调用）
+# HTTP 客户端（用于百度云 MCP 调用和阿里云百炼 API）
 httpx>=0.25.0
 
 # MCP 集成（可选，用于其他 MCP 服务器）
@@ -30,3 +30,17 @@ httpx>=0.25.0
 
 # LangSmith 可视化追踪
 langsmith>=0.1.0
+
+# 文档处理
+pdfplumber>=0.10.0  # PDF 解析
+python-docx>=1.1.0  # Word 文档解析
+
+# 数值计算（用于向量相似度计算）
+numpy>=1.24.0
+
+# 文件上传
+werkzeug>=3.0.0
+
+# RAGAS 评估框架
+ragas>=0.1.0
+datasets>=2.14.0

@@ -9,11 +9,16 @@ Flask应用主入口
 """
 import uuid
 import json
+import os
+import asyncio
 
 from flask import Flask, render_template, request, jsonify, session, Response
+from werkzeug.utils import secure_filename
 
 from config import Config
 from services.chat_service import chat_service
+from services.knowledge_base_service import knowledge_base_service
+from services.document_service import document_service
 
 # 创建Flask应用
 app = Flask(__name__)
@@ -562,6 +567,263 @@ def continue_task_stream():
             'Connection': 'keep-alive'
         }
     )
+
+
+# ==================== 知识库管理 API ====================
+
+@app.route('/knowledge-bases', methods=['GET'])
+def list_knowledge_bases():
+    """
+    获取所有知识库列表
+    """
+    try:
+        kbs = knowledge_base_service.list_knowledge_bases()
+        return jsonify({
+            'knowledge_bases': kbs
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取知识库列表失败: {str(e)}'
+        }), 500
+
+
+@app.route('/knowledge-bases', methods=['POST'])
+def create_knowledge_base():
+    """
+    创建知识库
+    
+    请求体：
+    - name: 知识库名称
+    - description: 描述（可选）
+    """
+    try:
+        data = request.json
+        name = data.get('name', '').strip()
+        description = data.get('description', '').strip()
+        
+        if not name:
+            return jsonify({'error': '知识库名称不能为空'}), 400
+        
+        kb = knowledge_base_service.create_knowledge_base(name, description)
+        return jsonify({
+            'status': 'ok',
+            'knowledge_base': kb
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'创建知识库失败: {str(e)}'
+        }), 500
+
+
+@app.route('/knowledge-bases/<kb_id>', methods=['GET'])
+def get_knowledge_base(kb_id: str):
+    """
+    获取知识库详情
+    """
+    try:
+        kb = knowledge_base_service.get_knowledge_base(kb_id)
+        if not kb:
+            return jsonify({'error': '知识库不存在'}), 404
+        
+        return jsonify({
+            'knowledge_base': kb
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取知识库详情失败: {str(e)}'
+        }), 500
+
+
+@app.route('/knowledge-bases/<kb_id>', methods=['DELETE'])
+def delete_knowledge_base(kb_id: str):
+    """
+    删除知识库
+    """
+    try:
+        success = knowledge_base_service.delete_knowledge_base(kb_id)
+        if not success:
+            return jsonify({'error': '知识库不存在'}), 404
+        
+        return jsonify({
+            'status': 'ok',
+            'message': '知识库已删除'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'删除知识库失败: {str(e)}'
+        }), 500
+
+
+@app.route('/knowledge-bases/<kb_id>/documents', methods=['GET'])
+def list_documents(kb_id: str):
+    """
+    获取知识库下的文档列表
+    """
+    try:
+        docs = knowledge_base_service.get_documents(kb_id)
+        return jsonify({
+            'documents': docs
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取文档列表失败: {str(e)}'
+        }), 500
+
+
+@app.route('/knowledge-bases/<kb_id>/documents', methods=['POST'])
+def upload_document(kb_id: str):
+    """
+    上传文档到知识库
+    
+    支持的文件类型：.txt, .md, .json, .csv, .pdf, .doc, .docx
+    """
+    try:
+        # 检查是否有文件
+        if 'file' not in request.files:
+            return jsonify({'error': '没有上传文件'}), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'error': '没有选择文件'}), 400
+        
+        # 检查文件类型
+        filename = secure_filename(file.filename)
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        if file_ext not in document_service.get_supported_file_types():
+            return jsonify({
+                'error': f'不支持的文件类型: {file_ext}。支持的类型: {document_service.get_supported_file_types()}'
+            }), 400
+        
+        # 检查文件大小
+        file.seek(0, 2)  # 移动到文件末尾
+        file_size = file.tell()
+        file.seek(0)  # 重置到开头
+        
+        if file_size > Config.MAX_FILE_SIZE:
+            return jsonify({
+                'error': f'文件大小超过限制 ({Config.MAX_FILE_SIZE / 1024 / 1024}MB)'
+            }), 400
+        
+        # 检查知识库是否存在
+        kb = knowledge_base_service.get_knowledge_base(kb_id)
+        if not kb:
+            return jsonify({'error': '知识库不存在'}), 404
+        
+        # 保存文件
+        upload_dir = os.path.join(Config.UPLOAD_FOLDER, str(kb_id))
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # 使用UUID作为文件名，避免冲突
+        file_id = str(uuid.uuid4())
+        file_path = os.path.join(upload_dir, f"{file_id}{file_ext}")
+        file.save(file_path)
+        
+        # 异步处理文档
+        async def process_doc():
+            return await document_service.process_document(file_path, filename, kb_id)
+        
+        # 运行异步处理
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(process_doc())
+        
+        if result.get('status') == 'completed':
+            return jsonify({
+                'status': 'ok',
+                'message': '文档上传成功',
+                'document_id': result.get('document_id'),
+                'chunk_count': result.get('chunk_count')
+            })
+        else:
+            return jsonify({
+                'error': result.get('error', '文档处理失败')
+            }), 500
+        
+    except Exception as e:
+        return jsonify({
+            'error': f'上传文档失败: {str(e)}'
+        }), 500
+
+
+@app.route('/documents/<doc_id>', methods=['DELETE'])
+def delete_document(doc_id: str):
+    """
+    删除文档
+    """
+    try:
+        success = knowledge_base_service.delete_document(doc_id)
+        if not success:
+            return jsonify({'error': '文档不存在'}), 404
+        
+        return jsonify({
+            'status': 'ok',
+            'message': '文档已删除'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'删除文档失败: {str(e)}'
+        }), 500
+
+
+# ==================== 会话知识库设置 API ====================
+
+@app.route('/sessions/<session_id>/knowledge-base', methods=['GET'])
+def get_session_knowledge_base(session_id: str):
+    """
+    获取会话当前选中的知识库
+    """
+    try:
+        kb_id = chat_service.get_knowledge_base_id(session_id)
+        
+        kb_info = None
+        if kb_id:
+            kb_info = knowledge_base_service.get_knowledge_base(kb_id)
+        
+        return jsonify({
+            'knowledge_base_id': kb_id,
+            'knowledge_base': kb_info
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取知识库设置失败: {str(e)}'
+        }), 500
+
+
+@app.route('/sessions/<session_id>/knowledge-base', methods=['PUT'])
+def set_session_knowledge_base(session_id: str):
+    """
+    设置会话的知识库
+    
+    请求体：
+    - knowledge_base_id: 知识库ID（null表示不使用知识库）
+    """
+    try:
+        data = request.json
+        kb_id = data.get('knowledge_base_id')  # 可以是 None
+        
+        # 验证知识库是否存在（如果不是 None）
+        if kb_id:
+            kb = knowledge_base_service.get_knowledge_base(kb_id)
+            if not kb:
+                return jsonify({'error': '知识库不存在'}), 404
+        
+        chat_service.set_knowledge_base_id(session_id, kb_id)
+        
+        return jsonify({
+            'status': 'ok',
+            'knowledge_base_id': kb_id,
+            'message': '知识库设置已更新'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'设置知识库失败: {str(e)}'
+        }), 500
 
 
 if __name__ == '__main__':
