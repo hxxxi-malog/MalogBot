@@ -632,22 +632,13 @@ def task_create(
     context: str = ""
 ) -> str:
     """
-    创建一个新任务（支持依赖关系）。
-    
-    **适用场景：**
-    - 需要管理有依赖关系的复杂任务
-    - 任务需要持久化（跨会话保存）
-    - 需要任务编排和并行执行
-    
-    **依赖关系：**
-    - blocked_by: 前置依赖列表，这些任务完成后才能执行当前任务
-    - 任务完成时会自动解锁后续任务
+    创建支持依赖关系的任务。详细用法: get_tool_usage('task_management')
     
     Args:
-        subject: 任务主题/标题（简短明了）
-        description: 任务详细描述
-        blocked_by: 前置依赖任务ID列表（这些任务必须先完成）
-        context: 执行上下文（如文件路径、URL等）
+        subject: 任务主题
+        description: 任务描述(可选)
+        blocked_by: 前置依赖任务ID列表(可选)
+        context: 执行上下文(可选)
         
     Returns:
         创建的任务JSON
@@ -666,22 +657,14 @@ def task_update(
     note: Optional[str] = None
 ) -> str:
     """
-    更新任务状态和依赖关系。
-    
-    **状态流转：**
-    - pending → in_progress: 开始执行
-    - in_progress → completed: 执行完成（自动解锁后续任务）
-    - in_progress → failed: 执行失败
-    - 任意状态 → cancelled: 取消任务
-    
-    **重要：任务完成时会自动解锁依赖它的后续任务！**
+    更新任务状态。详细用法: get_tool_usage('task_management')
     
     Args:
         task_id: 任务ID
-        status: 新状态（pending/in_progress/completed/cancelled/failed）
-        add_blocked_by: 添加前置依赖（需要先完成的任务ID）
-        add_blocks: 添加后置依赖（完成后会解锁的任务ID）
-        note: 备注信息
+        status: 新状态(pending/in_progress/completed/cancelled/failed)
+        add_blocked_by: 添加前置依赖(可选)
+        add_blocks: 添加后置依赖(可选)
+        note: 备注信息(可选)
         
     Returns:
         更新后的任务JSON
@@ -694,7 +677,7 @@ def task_update(
 @tool
 def task_get(task_id: int) -> str:
     """
-    获取单个任务的详细信息。
+    获取任务详情。
     
     Args:
         task_id: 任务ID
@@ -710,10 +693,7 @@ def task_get(task_id: int) -> str:
 @tool
 def task_get_ready() -> str:
     """
-    获取可以立即执行的任务。
-    
-    返回状态为 pending 且没有前置依赖的任务。
-    这些任务可以立即开始执行。
+    获取可立即执行的任务(pending且无阻塞)。
     
     Returns:
         可执行任务列表
@@ -728,9 +708,6 @@ def task_get_blocked() -> str:
     """
     获取被阻塞的任务。
     
-    返回正在等待前置任务完成的任务列表，
-    包含每个任务等待哪些任务完成。
-    
     Returns:
         被阻塞任务列表
     """
@@ -744,11 +721,6 @@ def task_get_status() -> str:
     """
     获取任务图整体状态。
     
-    回答三个核心问题：
-    1. 什么可以做？
-    2. 什么被卡住？
-    3. 什么做完了？
-    
     Returns:
         任务图状态摘要
     """
@@ -761,8 +733,6 @@ def task_get_status() -> str:
 def task_visualize() -> str:
     """
     可视化任务图。
-    
-    以 ASCII 图形方式展示任务状态和依赖关系。
     
     Returns:
         任务图可视化
