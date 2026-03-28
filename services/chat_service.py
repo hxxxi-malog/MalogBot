@@ -46,6 +46,7 @@ from agent.tools.skills import SKILLS_TOOLS
 from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
 from services.session_store import session_store
+from services.rag_service import rag_service
 from config import Config
 
 
@@ -268,7 +269,7 @@ class ChatService:
             reminder = todo_mgr.get_reminder_message()
             
             # 构建消息列表
-            messages = self._build_messages(chat_history, user_input, reminder)
+            messages = self._build_messages(chat_history, user_input, reminder, session_id)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
@@ -389,7 +390,7 @@ class ChatService:
             reminder = todo_mgr.get_reminder_message()
             
             # 构建消息列表
-            messages = self._build_messages(chat_history, user_input, reminder)
+            messages = self._build_messages(chat_history, user_input, reminder, session_id)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
@@ -1082,6 +1083,30 @@ class ChatService:
         """
         session_store.set_web_search_enabled(session_id, enabled)
 
+    # ==================== 知识库设置 ====================
+
+    def get_knowledge_base_id(self, session_id: str) -> Optional[str]:
+        """
+        获取会话当前选中的知识库ID
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            知识库ID，None表示不使用知识库
+        """
+        return session_store.get_knowledge_base_id(session_id)
+
+    def set_knowledge_base_id(self, session_id: str, kb_id: Optional[str]) -> None:
+        """
+        设置会话的知识库
+        
+        Args:
+            session_id: 会话ID
+            kb_id: 知识库ID，None表示不使用知识库
+        """
+        session_store.set_knowledge_base_id(session_id, kb_id)
+
     # ==================== 私有方法 ====================
 
     def _get_chat_history(self, session_id: str) -> List[Dict]:
@@ -1121,7 +1146,8 @@ class ChatService:
             self,
             chat_history: List[Dict],
             user_input: str,
-            todo_reminder: str = ""
+            todo_reminder: str = "",
+            session_id: str = None
     ) -> List:
         """
         构建LangChain消息列表
@@ -1130,14 +1156,31 @@ class ChatService:
             chat_history: 对话历史
             user_input: 当前用户输入
             todo_reminder: 任务提醒消息（问责机制触发时注入）
+            session_id: 会话ID，用于RAG检索
             
         Returns:
             LangChain消息对象列表
         """
         messages = []
 
+        # 构建系统提示
+        system_prompt = SYSTEM_PROMPT
+        
+        # 如果有选中的知识库，进行RAG检索并注入上下文
+        if session_id:
+            kb_id = session_store.get_knowledge_base_id(session_id)
+            if kb_id:
+                # 使用同步方式执行RAG检索
+                import asyncio
+                context = self._run_async_rag_search(user_input, kb_id)
+                
+                if context:
+                    # 将知识库上下文注入系统提示
+                    knowledge_prompt = f"""\n\n## 知识库上下文\n\n以下是知识库中检索到的相关信息，请优先参考这些信息回答用户问题：\n\n{context}\n\n---\n请在回答时适当引用知识库中的相关信息。\n"""
+                    system_prompt += knowledge_prompt
+        
         # 添加系统提示（始终在第一位）
-        messages.append(SystemMessage(content=SYSTEM_PROMPT))
+        messages.append(SystemMessage(content=system_prompt))
 
         # 添加历史消息
         for msg in chat_history:
@@ -1161,6 +1204,51 @@ class ChatService:
         messages.append(HumanMessage(content=user_input))
 
         return messages
+
+    def _run_async_rag_search(self, query: str, kb_id: str) -> str:
+        """
+        同步执行异步RAG检索
+        
+        Args:
+            query: 查询文本
+            kb_id: 知识库ID
+            
+        Returns:
+            检索到的上下文
+        """
+        import asyncio
+        import threading
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"[RAG] 开始检索知识库: kb_id={kb_id}, query={query[:50]}...")
+        
+        result = [""]  # 使用列表存储结果以便在闭包中修改
+        error = [None]  # 存储错误信息
+        
+        def run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result[0] = loop.run_until_complete(
+                    rag_service.search_with_context(query, kb_id)
+                )
+                logger.info(f"[RAG] 检索完成, 结果长度: {len(result[0]) if result[0] else 0}")
+            except Exception as e:
+                error[0] = e
+                logger.error(f"[RAG] 检索失败: {str(e)}")
+            finally:
+                loop.close()
+        
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
+        thread.join()
+        
+        if error[0]:
+            logger.error(f"[RAG] 检索出错: {str(error[0])}")
+            return ""
+        
+        return result[0] or ""
 
     def _execute_agent_loop(
             self,

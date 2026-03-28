@@ -75,3 +75,24 @@ class Config:
 
     # MCP 配置
     MCP_ENABLED = os.getenv('MCP_ENABLED', 'true').lower() == 'true'  # 是否启用 MCP，默认开启
+
+    # ==================== 阿里云百炼配置 ====================
+    # 阿里云百炼 API Key
+    DASHSCOPE_API_KEY = os.getenv('DASHSCOPE_API_KEY')
+
+    # 向量模型配置
+    EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-v4')
+    EMBEDDING_DIMENSION = int(os.getenv('EMBEDDING_DIMENSION', '1024'))
+
+    # 重排序模型配置
+    RERANK_MODEL = os.getenv('RERANK_MODEL', 'qwen3-vl-rerank')
+
+    # RAG 配置
+    RAG_TOP_N = int(os.getenv('RAG_TOP_N', '10'))  # 初始检索数量
+    RAG_TOP_K = int(os.getenv('RAG_TOP_K', '3'))   # 重排序后返回的最相关数量
+    CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', '500'))  # 文本分块大小
+    CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '50'))  # 文本分块重叠大小
+
+    # 文件上传配置
+    UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', './uploads')
+    MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '10485760'))  # 10MB

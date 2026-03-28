@@ -122,7 +122,8 @@ class SessionStore:
                 'created_at': sess.created_at.isoformat() if sess.created_at else None,
                 'updated_at': sess.updated_at.isoformat() if sess.updated_at else None,
                 'message_count': msg_count,
-                'web_search_enabled': sess.web_search_enabled if sess.web_search_enabled is not None else False
+                'web_search_enabled': sess.web_search_enabled if sess.web_search_enabled is not None else False,
+                'knowledge_base_id': sess.knowledge_base_id
             }
     
     # ==================== 消息历史 ====================
@@ -280,6 +281,46 @@ class SessionStore:
             sess = session.query(Session).filter_by(session_id=session_id).first()
             if sess:
                 sess.web_search_enabled = enabled
+                return True
+            return False
+
+    # ==================== 知识库设置 ====================
+
+    def get_knowledge_base_id(self, session_id: str) -> Optional[str]:
+        """
+        获取会话当前选中的知识库ID
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            知识库ID，None表示不使用知识库
+        """
+        with db_manager.get_session() as session:
+            sess = session.query(Session).filter_by(session_id=session_id).first()
+            if not sess:
+                return None
+            return sess.knowledge_base_id
+
+    def set_knowledge_base_id(self, session_id: str, kb_id: Optional[str]) -> bool:
+        """
+        设置会话的知识库
+        
+        Args:
+            session_id: 会话ID
+            kb_id: 知识库ID，None表示不使用知识库
+            
+        Returns:
+            是否设置成功
+        """
+        with db_manager.get_session() as session:
+            # 确保会话存在
+            self.get_or_create_session(session_id)
+            
+            # 更新设置
+            sess = session.query(Session).filter_by(session_id=session_id).first()
+            if sess:
+                sess.knowledge_base_id = kb_id
                 return True
             return False
 

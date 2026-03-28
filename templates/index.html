@@ -1178,13 +1178,18 @@
     </style>
 </head>
 <body>
-    <!-- 侧边栏 -->
+        <!-- 侧边栏 -->
     <div class="sidebar-container" id="sidebar">
         <div class="sidebar-header">
             <span class="sidebar-title">💬 对话列表</span>
-            <button class="btn-icon" id="newChatBtnSidebar" title="新建对话">
-                <span>➕</span>
-            </button>
+            <div style="display: flex; gap: 4px;">
+                <button class="btn-icon" id="knowledgeBaseBtn" title="知识库管理">
+                    <span>📚</span>
+                </button>
+                <button class="btn-icon" id="newChatBtnSidebar" title="新建对话">
+                    <span>➕</span>
+                </button>
+            </div>
         </div>
         <div class="session-list" id="sessionList">
             <!-- 会话列表将通过JS动态生成 -->
@@ -1218,6 +1223,12 @@
                         <input type="checkbox" id="welcomeWebSearchCheckbox">
                         <span class="toggle-slider"></span>
                     </label>
+                </div>
+                <div class="toggle-switch-wrapper" id="welcomeKnowledgeBaseToggle" style="cursor: pointer;">
+                    <span class="toggle-icon">📚</span>
+                    <select id="welcomeKnowledgeBaseSelect" style="border: none; background: transparent; font-size: 14px; cursor: pointer; outline: none; max-width: 150px;">
+                        <option value="">不使用知识库</option>
+                    </select>
                 </div>
             </div>
         </div>
@@ -1258,6 +1269,12 @@
                     <input type="checkbox" id="chatWebSearchCheckbox">
                     <span class="toggle-slider"></span>
                 </label>
+            </div>
+            <div class="toggle-switch-wrapper" id="chatKnowledgeBaseToggle" style="cursor: pointer;">
+                <span class="toggle-icon">📚</span>
+                <select id="chatKnowledgeBaseSelect" style="border: none; background: transparent; font-size: 14px; cursor: pointer; outline: none; max-width: 150px;">
+                    <option value="">不使用知识库</option>
+                </select>
             </div>
             <div class="input-area-main">
                 <input
@@ -1800,6 +1817,20 @@
             // 如果是新会话，先创建会话
             if (isNewSession || !currentSessionId) {
                 await createNewSession(false);
+                
+                // 新会话创建后，同步知识库设置
+                if (currentKnowledgeBaseId) {
+                    console.log('[KB] 同步知识库到新会话:', currentKnowledgeBaseId);
+                    try {
+                        await fetch(`/sessions/${currentSessionId}/knowledge-base`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ knowledge_base_id: currentKnowledgeBaseId })
+                        });
+                    } catch (e) {
+                        console.error('[KB] 同步知识库失败:', e);
+                    }
+                }
             }
 
             // 显示聊天界面
@@ -2300,8 +2331,326 @@
             });
         }
 
+        // ==================== 知识库功能 ====================
+
+        // 知识库相关元素
+        const knowledgeBaseBtn = document.getElementById('knowledgeBaseBtn');
+        const welcomeKnowledgeBaseSelect = document.getElementById('welcomeKnowledgeBaseSelect');
+        const chatKnowledgeBaseSelect = document.getElementById('chatKnowledgeBaseSelect');
+
+        // 知识库缓存
+        let knowledgeBasesCache = [];
+        let currentKnowledgeBaseId = null;
+
+        // 加载知识库列表
+        async function loadKnowledgeBases() {
+            try {
+                const response = await fetch('/knowledge-bases');
+                const data = await response.json();
+                knowledgeBasesCache = data.knowledge_bases || [];
+                updateKnowledgeBaseSelects();
+            } catch (error) {
+                console.error('Failed to load knowledge bases:', error);
+            }
+        }
+
+        // 更新知识库选择器
+        function updateKnowledgeBaseSelects() {
+            const options = '<option value="">不使用知识库</option>' + 
+                knowledgeBasesCache.map(kb => 
+                    `<option value="${kb.id}">${escapeHtml(kb.name)} (${kb.document_count}个文档)</option>`
+                ).join('');
+            
+            if (welcomeKnowledgeBaseSelect) {
+                welcomeKnowledgeBaseSelect.innerHTML = options;
+                welcomeKnowledgeBaseSelect.value = currentKnowledgeBaseId || '';
+            }
+            if (chatKnowledgeBaseSelect) {
+                chatKnowledgeBaseSelect.innerHTML = options;
+                chatKnowledgeBaseSelect.value = currentKnowledgeBaseId || '';
+            }
+        }
+
+        // 切换知识库
+        async function switchKnowledgeBase(kbId) {
+            currentKnowledgeBaseId = kbId || null;
+            console.log('[KB] 切换知识库:', kbId);
+            
+            // 如果有当前会话，同步到服务器
+            if (currentSessionId) {
+                try {
+                    await fetch(`/sessions/${currentSessionId}/knowledge-base`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ knowledge_base_id: kbId || null })
+                    });
+                    console.log('[KB] 已同步到会话:', currentSessionId);
+                } catch (error) {
+                    console.error('[KB] 同步失败:', error);
+                }
+            } else {
+                console.log('[KB] 没有活动会话，知识库设置将在发送消息时同步');
+            }
+            
+            // 更新选择器
+            updateKnowledgeBaseSelects();
+        }
+
+        // 监听知识库选择器变化
+        if (welcomeKnowledgeBaseSelect) {
+            welcomeKnowledgeBaseSelect.addEventListener('change', (e) => {
+                switchKnowledgeBase(e.target.value || null);
+            });
+        }
+        if (chatKnowledgeBaseSelect) {
+            chatKnowledgeBaseSelect.addEventListener('change', (e) => {
+                switchKnowledgeBase(e.target.value || null);
+            });
+        }
+
+        // 加载会话的知识库设置
+        async function loadSessionKnowledgeBase() {
+            if (!currentSessionId) return;
+            try {
+                const response = await fetch(`/sessions/${currentSessionId}/knowledge-base`);
+                const data = await response.json();
+                currentKnowledgeBaseId = data.knowledge_base_id || null;
+                updateKnowledgeBaseSelects();
+            } catch (error) {
+                console.error('Failed to load session knowledge base:', error);
+            }
+        }
+
+        // 知识库管理模态框
+        function showKnowledgeBaseModal() {
+            // 创建模态框
+            const modal = document.createElement('div');
+            modal.id = 'knowledgeBaseModal';
+            modal.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.5); z-index: 10000;
+                display: flex; align-items: center; justify-content: center;
+            `;
+            
+            modal.innerHTML = `
+                <div style="background: white; border-radius: 16px; width: 90%; max-width: 800px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
+                    <div style="padding: 20px 24px; border-bottom: 1px solid var(--gray-200); display: flex; justify-content: space-between; align-items: center;">
+                        <h2 style="margin: 0; font-size: 18px;">📚 知识库管理</h2>
+                        <button onclick="document.getElementById('knowledgeBaseModal').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--gray-500);">&times;</button>
+                    </div>
+                    <div style="padding: 20px 24px;">
+                        <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+                            <input type="text" id="newKbName" placeholder="知识库名称" style="flex: 1; padding: 10px 14px; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 14px;">
+                            <input type="text" id="newKbDesc" placeholder="描述（可选）" style="flex: 2; padding: 10px 14px; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 14px;">
+                            <button onclick="createKnowledgeBase()" style="padding: 10px 20px; background: var(--primary-600); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500;">创建</button>
+                        </div>
+                        <div id="kbList" style="max-height: 400px; overflow-y: auto;"></div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.remove();
+            });
+            
+            renderKnowledgeBaseList();
+        }
+
+        // 渲染知识库列表
+        async function renderKnowledgeBaseList() {
+            const kbList = document.getElementById('kbList');
+            if (!kbList) return;
+            
+            if (knowledgeBasesCache.length === 0) {
+                kbList.innerHTML = '<div style="text-align: center; color: var(--gray-500); padding: 40px;">暂无知识库</div>';
+                return;
+            }
+            
+            kbList.innerHTML = knowledgeBasesCache.map(kb => `
+                <div style="border: 1px solid var(--gray-200); border-radius: 12px; margin-bottom: 12px; overflow: hidden;">
+                    <div style="padding: 16px; display: flex; justify-content: space-between; align-items: center; background: var(--gray-50);">
+                        <div>
+                            <div style="font-weight: 600; font-size: 15px;">${escapeHtml(kb.name)}</div>
+                            <div style="font-size: 12px; color: var(--gray-500); margin-top: 4px;">${kb.document_count} 个文档 · ${kb.chunk_count} 个片段</div>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <button onclick="showDocuments('${kb.id}')" style="padding: 6px 12px; background: white; border: 1px solid var(--gray-300); border-radius: 6px; cursor: pointer; font-size: 13px;">查看文档</button>
+                            <button onclick="deleteKnowledgeBase('${kb.id}')" style="padding: 6px 12px; background: var(--danger-50); color: var(--danger-600); border: 1px solid var(--danger-200); border-radius: 6px; cursor: pointer; font-size: 13px;">删除</button>
+                        </div>
+                    </div>
+                    ${kb.description ? `<div style="padding: 12px 16px; font-size: 13px; color: var(--gray-600);">${escapeHtml(kb.description)}</div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        // 创建知识库
+        async function createKnowledgeBase() {
+            const nameInput = document.getElementById('newKbName');
+            const descInput = document.getElementById('newKbDesc');
+            
+            const name = nameInput.value.trim();
+            if (!name) {
+                alert('请输入知识库名称');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/knowledge-bases', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description: descInput.value.trim() })
+                });
+                
+                if (response.ok) {
+                    nameInput.value = '';
+                    descInput.value = '';
+                    await loadKnowledgeBases();
+                    renderKnowledgeBaseList();
+                } else {
+                    const data = await response.json();
+                    alert(data.error || '创建失败');
+                }
+            } catch (error) {
+                console.error('Failed to create knowledge base:', error);
+                alert('创建失败');
+            }
+        }
+
+        // 删除知识库
+        async function deleteKnowledgeBase(kbId) {
+            if (!confirm('确定要删除这个知识库吗？所有文档将被删除。')) return;
+            
+            try {
+                const response = await fetch(`/knowledge-bases/${kbId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    await loadKnowledgeBases();
+                    renderKnowledgeBaseList();
+                    if (currentKnowledgeBaseId === kbId) {
+                        switchKnowledgeBase(null);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to delete knowledge base:', error);
+            }
+        }
+
+        // 显示文档列表
+        async function showDocuments(kbId) {
+            try {
+                const response = await fetch(`/knowledge-bases/${kbId}/documents`);
+                const data = await response.json();
+                const docs = data.documents || [];
+                
+                const modal = document.createElement('div');
+                modal.id = 'documentsModal';
+                modal.style.cssText = `
+                    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(0,0,0,0.5); z-index: 10001;
+                    display: flex; align-items: center; justify-content: center;
+                `;
+                
+                modal.innerHTML = `
+                    <div style="background: white; border-radius: 16px; width: 90%; max-width: 600px; max-height: 70vh; overflow: hidden;">
+                        <div style="padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="margin: 0; font-size: 16px;">📄 文档列表</h3>
+                            <button onclick="document.getElementById('documentsModal').remove()" style="background: none; border: none; font-size: 20px; cursor: pointer;">&times;</button>
+                        </div>
+                        <div style="padding: 16px 20px;">
+                            <form id="uploadForm" style="margin-bottom: 16px;">
+                                <input type="file" id="fileInput" accept=".txt,.md,.json,.csv,.pdf,.doc,.docx" style="margin-bottom: 8px;">
+                                <button type="submit" style="padding: 8px 16px; background: var(--primary-600); color: white; border: none; border-radius: 6px; cursor: pointer;">上传文档</button>
+                            </form>
+                            <div style="max-height: 300px; overflow-y: auto;">
+                                ${docs.length === 0 ? '<div style="text-align: center; color: var(--gray-500); padding: 20px;">暂无文档</div>' : 
+                                    docs.map(doc => `
+                                        <div style="padding: 12px; border: 1px solid var(--gray-200); border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                                            <div>
+                                                <div style="font-weight: 500;">${escapeHtml(doc.filename)}</div>
+                                                <div style="font-size: 12px; color: var(--gray-500);">${doc.chunk_count} 个片段 · ${doc.status}</div>
+                                            </div>
+                                            <button onclick="deleteDocument('${doc.id}', '${kbId}')" style="padding: 4px 8px; background: var(--danger-50); color: var(--danger-600); border: 1px solid var(--danger-200); border-radius: 4px; cursor: pointer; font-size: 12px;">删除</button>
+                                        </div>
+                                    `).join('')
+                                }
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(modal);
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) modal.remove();
+                });
+                
+                // 绑定上传表单
+                document.getElementById('uploadForm').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    uploadDocument(kbId);
+                });
+                
+            } catch (error) {
+                console.error('Failed to load documents:', error);
+            }
+        }
+
+        // 上传文档
+        async function uploadDocument(kbId) {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('请选择文件');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch(`/knowledge-bases/${kbId}/documents`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    alert('上传成功！');
+                    document.getElementById('documentsModal').remove();
+                    showDocuments(kbId);
+                    await loadKnowledgeBases();
+                } else {
+                    alert(data.error || '上传失败');
+                }
+            } catch (error) {
+                console.error('Failed to upload document:', error);
+                alert('上传失败');
+            }
+        }
+
+        // 删除文档
+        async function deleteDocument(docId, kbId) {
+            if (!confirm('确定要删除这个文档吗？')) return;
+            
+            try {
+                const response = await fetch(`/documents/${docId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    document.getElementById('documentsModal').remove();
+                    showDocuments(kbId);
+                    await loadKnowledgeBases();
+                }
+            } catch (error) {
+                console.error('Failed to delete document:', error);
+            }
+        }
+
+        // 知识库按钮点击事件
+        if (knowledgeBaseBtn) {
+            knowledgeBaseBtn.addEventListener('click', showKnowledgeBaseModal);
+        }
+
         // 初始化
         loadSessions();
+        loadKnowledgeBases();
         updateWebSearchToggleUI();
     </script>
 </body>

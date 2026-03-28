@@ -21,6 +21,7 @@ class Session(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
     web_search_enabled = Column(Boolean, default=False, nullable=False)  # 是否启用联网搜索
+    knowledge_base_id = Column(String(100), nullable=True)  # 当前选中的知识库ID，None表示不使用知识库
     
     # 关系
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
@@ -31,7 +32,8 @@ class Session(Base):
             'session_id': self.session_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'web_search_enabled': self.web_search_enabled if self.web_search_enabled is not None else False
+            'web_search_enabled': self.web_search_enabled if self.web_search_enabled is not None else False,
+            'knowledge_base_id': self.knowledge_base_id
         }
 
 
