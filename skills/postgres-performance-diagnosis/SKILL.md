@@ -46,7 +46,13 @@ conn.close()
 
 ### Step 2-7: Run Diagnostic Queries
 
-Execute queries from [reference.md](reference.md) sections:
+**首先调用 `get_skill_reference` 工具获取完整的 SQL 查询：**
+
+```
+get_skill_reference(skill_name="postgres-performance-diagnosis", reference_file="reference.md")
+```
+
+**重要：每个诊断会话只需调用一次该工具，获取查询列表后直接使用，不要重复调用。**
 
 | Step | Section | Purpose |
 |------|---------|---------|
@@ -93,11 +99,15 @@ Execute queries from [reference.md](reference.md) sections:
 
 ## Report Generation
 
-After completing all diagnostic steps, generate a comprehensive report following the template in [report_template.md](report_template.md).
+After completing all diagnostic steps, generate a comprehensive report. Use `get_skill_template` tool to get the report format:
+
+```
+get_skill_template(skill_name="postgres-performance-diagnosis", template_file="report_template.md")
+```
 
 Save the report to: `docs/diagnosis_reports/YYYY-MM-DD_HH-MM-S diagnosis_report.md`
 
 ## Additional Resources
 
-- For all diagnostic SQL queries, see [reference.md](reference.md)
-- For report output format, see [report_template.md](report_template.md)
+- 对于所有诊断 SQL 查询，使用 `get_skill_reference` 工具获取（每个诊断会话只需调用一次）
+- 对于报告输出格式，使用 `get_skill_template` 工具获取
