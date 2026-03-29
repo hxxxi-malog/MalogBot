@@ -10,9 +10,10 @@
 """
 import json
 import uuid
+import logging
 from typing import Generator, Dict, Any, Optional, List
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.errors import GraphRecursionError
 
@@ -27,6 +28,7 @@ from agent.tools.bash import (
 from agent.tools.todo_manager import (
     todo_manager,
     get_todo_status,
+    clear_todo_list,
     get_todo_manager,
     remove_todo_manager,
     set_current_session
@@ -43,8 +45,15 @@ from agent.tools.sub_agent import (
     clear_session_tools
 )
 from agent.tools.skills import SKILLS_TOOLS
+from agent.tools.context_compact import CONTEXT_COMPACT_TOOLS
 from mcp.adapters import get_web_search_tool
 from services.context_manager import context_manager
+from services.context_compactor import (
+    context_compactor,
+    micro_compact,
+    should_auto_compact,
+    auto_compact
+)
 from services.session_store import session_store
 from services.rag_service import rag_service
 from config import Config
@@ -52,6 +61,9 @@ from config import Config
 
 # 递归限制确认标记
 RECURSION_LIMIT_MARKER = "__RECURSION_LIMIT_REACHED__"
+
+# 日志
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -63,29 +75,35 @@ class ChatService:
         self.llm = get_llm(streaming=True)
         
         # 基础工具（始终可用）
-        # 包含 todo_manager 和 get_todo_status 用于简单线性任务管理
+        # 包含 todo_manager, get_todo_status, clear_todo_list 用于简单线性任务管理
         # 包含 task_manager 工具用于复杂任务编排（依赖关系）
         # 包含 spawn_sub_agent 用于创建子agent执行任务
         # 包含 skills 工具用于使用预定义技能
+        # 包含 context_compact 工具用于上下文压缩
         self.base_tools = [
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            clear_todo_list,
             *TASK_MANAGER_TOOLS,  # 任务编排工具：task_create, task_update, task_get_ready 等
             spawn_sub_agent,  # 主agent可以创建子agent
-            *SKILLS_TOOLS  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
+            *SKILLS_TOOLS,  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
+            *CONTEXT_COMPACT_TOOLS  # 上下文压缩工具：compact_context, list_archives, restore_archive
         ]
         
         # 子agent可用的工具（不包含 spawn_sub_agent，防止无限递归）
         # 子agent也可以使用任务管理工具
+        # 子agent也可以使用上下文压缩工具
         self.sub_agent_tools = [
             execute_bash,
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            clear_todo_list,
             *TASK_MANAGER_TOOLS,  # 子agent也可以使用任务编排
-            *SKILLS_TOOLS  # 子agent也可以使用技能工具
+            *SKILLS_TOOLS,  # 子agent也可以使用技能工具
+            *CONTEXT_COMPACT_TOOLS  # 子agent也可以使用上下文压缩工具
         ]
         
         # 创建支持工具调用的Agent（使用基础工具）
@@ -142,9 +160,6 @@ class ChatService:
         """
         获取或创建会话的 Agent
         
-        根据会话的工具配置，返回对应的 Agent
-        如果工具配置发生变化，会重新创建 Agent
-        
         Args:
             session_id: 会话ID
             
@@ -154,7 +169,7 @@ class ChatService:
         # 获取主agent的工具（包含spawn_sub_agent）
         current_tools = self._get_tools_for_session(session_id, include_sub_agent=True)
         
-        # 直接创建新的 Agent（确保工具配置正确）
+        # 创建 Agent
         return create_react_agent(self.llm, current_tools)
 
     # ==================== 会话管理 ====================
@@ -246,14 +261,26 @@ class ChatService:
         # 获取会话历史
         chat_history = self._get_chat_history(session_id)
         
-        # 检查是否需要压缩上下文
-        if context_manager.should_compress(chat_history):
-            chat_history = context_manager.compress_history(
-                chat_history, 
-                llm_client=self.llm
+        # === 第二层：自动压缩检查 ===
+        # Token 超过阈值时触发
+        if should_auto_compact(self._dict_to_messages(chat_history)):
+            logger.info(f"[auto_compact] 触发自动压缩，session: {session_id}")
+            compressed_msgs, archive_id = auto_compact(
+                self._dict_to_messages(chat_history),
+                session_id,
+                self.llm
             )
-            # 数据库模式下，压缩后需要更新数据库
+            chat_history = [self._message_to_dict(msg) for msg in compressed_msgs]
             self._compress_history_in_db(session_id, chat_history)
+            logger.info(f"[auto_compact] 压缩完成，归档ID: {archive_id}")
+        else:
+            # 使用旧版的 context_manager 进行压缩（兼容）
+            if context_manager.should_compress(chat_history):
+                chat_history = context_manager.compress_history(
+                    chat_history, 
+                    llm_client=self.llm
+                )
+                self._compress_history_in_db(session_id, chat_history)
 
         try:
             # 设置当前会话ID（供工具使用）
@@ -270,11 +297,15 @@ class ChatService:
             
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input, reminder, session_id)
+            
+            # === 第一层：微观压缩 ===
+            # 每次调用前，将旧的 tool result 替换为占位符
+            messages = micro_compact(messages)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
             
-            # 使用Agent处理（带递归限制配置）
+            # 使用Agent处理
             result = agent.invoke(
                 {"messages": messages},
                 config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
@@ -367,14 +398,26 @@ class ChatService:
         # 获取会话历史
         chat_history = self._get_chat_history(session_id)
         
-        # 检查是否需要压缩上下文
-        if context_manager.should_compress(chat_history):
-            chat_history = context_manager.compress_history(
-                chat_history, 
-                llm_client=self.llm
+        # === 第二层：自动压缩检查 ===
+        # Token 超过阈值时触发
+        if should_auto_compact(self._dict_to_messages(chat_history)):
+            logger.info(f"[auto_compact] 触发自动压缩，session: {session_id}")
+            compressed_msgs, archive_id = auto_compact(
+                self._dict_to_messages(chat_history),
+                session_id,
+                self.llm
             )
-            # 数据库模式下，压缩后需要更新数据库
+            chat_history = [self._message_to_dict(msg) for msg in compressed_msgs]
             self._compress_history_in_db(session_id, chat_history)
+            logger.info(f"[auto_compact] 压缩完成，归档ID: {archive_id}")
+        else:
+            # 使用旧版的 context_manager 进行压缩（兼容）
+            if context_manager.should_compress(chat_history):
+                chat_history = context_manager.compress_history(
+                    chat_history, 
+                    llm_client=self.llm
+                )
+                self._compress_history_in_db(session_id, chat_history)
 
         try:
             # 设置当前会话ID（供工具使用）
@@ -391,6 +434,10 @@ class ChatService:
             
             # 构建消息列表
             messages = self._build_messages(chat_history, user_input, reminder, session_id)
+            
+            # === 第一层：微观压缩 ===
+            # 每次调用前，将旧的 tool result 替换为占位符
+            messages = micro_compact(messages)
 
             # 获取会话特定的 Agent（根据联网搜索设置动态创建）
             agent = self._get_agent_for_session(session_id)
@@ -398,7 +445,7 @@ class ChatService:
             # 收集完整响应
             full_response = ""
 
-            # 使用多种 stream_mode（带递归限制配置）
+            # 使用多种 stream_mode
             for chunk in agent.stream(
                     {"messages": messages},
                     stream_mode=["messages", "updates"],
@@ -467,7 +514,10 @@ class ChatService:
             if not full_response:
                 # 获取会话特定的 Agent
                 agent = self._get_agent_for_session(session_id)
-                result = agent.invoke({"messages": messages})
+                result = agent.invoke(
+                    {"messages": messages},
+                    config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+                )
                 full_response = self._extract_ai_message(result)
 
                 # 检查是否需要确认
@@ -591,7 +641,10 @@ class ChatService:
                 messages = self._build_messages_for_cancel(chat_history, exec_context)
                 # 获取会话特定的 Agent
                 agent = self._get_agent_for_session(session_id)
-                agent_result = agent.invoke({"messages": messages})
+                agent_result = agent.invoke(
+                    {"messages": messages},
+                    config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+                )
                 output = self._extract_ai_message(agent_result)
 
                 # 检查是否需要确认下一个命令
@@ -746,7 +799,8 @@ class ChatService:
 
                 for chunk in agent.stream(
                         {"messages": messages},
-                        stream_mode=["messages", "updates"]
+                        stream_mode=["messages", "updates"],
+                        config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
                 ):
                     # 检查是否被取消
                     if self.is_cancelled(session_id):
@@ -1285,7 +1339,8 @@ class ChatService:
         
         for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"]
+                stream_mode=["messages", "updates"],
+                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
         ):
             # 检查是否被取消
             if self.is_cancelled(session_id):
@@ -1428,6 +1483,62 @@ class ChatService:
             pass
 
         return None
+
+    def _dict_to_messages(self, message_dicts: List[Dict]) -> List:
+        """
+        将字典列表转换为 LangChain 消息列表
+        
+        Args:
+            message_dicts: 消息字典列表
+            
+        Returns:
+            LangChain 消息列表
+        """
+        messages = []
+        for msg_dict in message_dicts:
+            role = msg_dict.get('role')
+            content = msg_dict.get('content', '')
+            
+            if role == 'user':
+                messages.append(HumanMessage(content=content))
+            elif role == 'assistant':
+                messages.append(AIMessage(content=content))
+            elif role == 'system':
+                messages.append(SystemMessage(content=content))
+            elif role == 'tool':
+                messages.append(ToolMessage(
+                    content=content,
+                    tool_call_id=msg_dict.get('tool_call_id', '')
+                ))
+        
+        return messages
+    
+    def _message_to_dict(self, msg: Any) -> Dict:
+        """
+        将 LangChain 消息转换为字典
+        
+        Args:
+            msg: LangChain 消息对象
+            
+        Returns:
+            消息字典
+        """
+        if isinstance(msg, HumanMessage):
+            return {"role": "user", "content": str(msg.content)}
+        elif isinstance(msg, AIMessage):
+            result = {"role": "assistant", "content": str(msg.content)}
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                result['tool_calls'] = [
+                    {"name": tc.get('name'), "args": tc.get('args'), "id": tc.get('id')}
+                    for tc in msg.tool_calls
+                ]
+            return result
+        elif isinstance(msg, SystemMessage):
+            return {"role": "system", "content": str(msg.content)}
+        elif isinstance(msg, ToolMessage):
+            return {"role": "tool", "content": str(msg.content), "tool_call_id": msg.tool_call_id}
+        else:
+            return {"role": "unknown", "content": str(msg.content) if hasattr(msg, 'content') else str(msg)}
 
 
 # 创建全局实例

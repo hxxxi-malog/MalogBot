@@ -96,3 +96,13 @@ class Config:
     # 文件上传配置
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', './uploads')
     MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '10485760'))  # 10MB
+
+    # ==================== 上下文压缩配置 ====================
+    # 微观压缩：保留最近的 N 个 tool_result
+    KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '5'))
+    
+    # 自动压缩：Token 阈值（字符数近似）
+    AUTO_COMPACT_THRESHOLD = int(os.getenv('AUTO_COMPACT_THRESHOLD', '50000'))
+    
+    # 压缩后保留的最近消息数
+    KEEP_RECENT_MESSAGES = int(os.getenv('KEEP_RECENT_MESSAGES', '10'))

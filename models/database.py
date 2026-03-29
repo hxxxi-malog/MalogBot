@@ -37,6 +37,32 @@ class Session(Base):
         }
 
 
+class ContextArchive(Base):
+    """上下文归档模型
+    
+    用于存储压缩前的完整对话历史，支持恢复。
+    """
+    __tablename__ = 'context_archives'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    archive_id = Column(String(100), unique=True, nullable=False, index=True)  # 归档唯一标识
+    session_id = Column(String(100), ForeignKey('sessions.session_id'), nullable=False, index=True)  # 所属会话
+    messages = Column(Text, nullable=False)  # JSON 格式的消息列表
+    file_path = Column(String(500), nullable=True)  # 归档文件路径（磁盘备份）
+    message_count = Column(Integer, default=0)  # 归档的消息数量
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    
+    def to_dict(self):
+        """转换为字典"""
+        return {
+            'archive_id': self.archive_id,
+            'session_id': self.session_id,
+            'message_count': self.message_count,
+            'file_path': self.file_path,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
 class Message(Base):
     """消息模型"""
     __tablename__ = 'messages'
@@ -65,4 +91,4 @@ class Message(Base):
 
 
 # 导出所有模型
-__all__ = ['Base', 'Session', 'Message']
+__all__ = ['Base', 'Session', 'Message', 'ContextArchive']
