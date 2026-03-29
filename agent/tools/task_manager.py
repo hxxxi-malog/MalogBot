@@ -459,14 +459,14 @@ class TaskManager:
         可视化任务图
         
         Returns:
-            文本风格的任务图
+            ASCII 风格的任务图
         """
         tasks = self._load_all()
         
         if not tasks:
             return "任务图为空"
         
-        lines = ["任务图", ""]
+        lines = ["[任务图]", ""]
         
         # 按状态分组
         by_status = {
@@ -484,7 +484,7 @@ class TaskManager:
         
         # 渲染进行中的任务
         if by_status[self.STATUS_IN_PROGRESS]:
-            lines.append("### 进行中")
+            lines.append("进行中：")
             for task in by_status[self.STATUS_IN_PROGRESS]:
                 blocked = "[被阻塞]" if task.get("blockedBy") else ""
                 lines.append(f"  [{task['id']}] {task['subject']} {blocked}")
@@ -492,7 +492,7 @@ class TaskManager:
         
         # 渲染待处理的任务
         if by_status[self.STATUS_PENDING]:
-            lines.append("### 待处理")
+            lines.append("待处理：")
             for task in by_status[self.STATUS_PENDING]:
                 if task.get("blockedBy"):
                     deps = ", ".join(str(d) for d in task["blockedBy"])
@@ -503,14 +503,14 @@ class TaskManager:
         
         # 渲染已完成的任务
         if by_status[self.STATUS_COMPLETED]:
-            lines.append("### 已完成")
+            lines.append("已完成：")
             for task in by_status[self.STATUS_COMPLETED]:
                 lines.append(f"  [{task['id']}] {task['subject']}")
             lines.append("")
         
         # 渲染失败/取消的任务
         if by_status[self.STATUS_FAILED] or by_status[self.STATUS_CANCELLED]:
-            lines.append("### 失败/取消")
+            lines.append("失败/取消：")
             for task in by_status[self.STATUS_FAILED]:
                 lines.append(f"  [{task['id']}] {task['subject']} (失败)")
             for task in by_status[self.STATUS_CANCELLED]:
@@ -577,46 +577,6 @@ class TaskManager:
             return json.dumps({
                 "success": True,
                 "message": f"已清空 {count} 个任务"
-            }, ensure_ascii=False, indent=2)
-    
-    def cleanup_completed(self, keep_recent: int = 10) -> str:
-        """
-        清理已完成的任务，保留最近的几个
-        
-        Args:
-            keep_recent: 保留的已完成任务数量
-            
-        Returns:
-            清理结果
-        """
-        with self._lock:
-            all_tasks = self._load_all()
-            
-            # 分类任务
-            completed_tasks = [t for t in all_tasks if t.get("status") == self.STATUS_COMPLETED]
-            active_tasks = [t for t in all_tasks if t.get("status") != self.STATUS_COMPLETED]
-            
-            # 按更新时间排序已完成的任务
-            completed_tasks.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
-            
-            # 保留最近的 N 个已完成任务
-            to_keep = set(t["id"] for t in completed_tasks[:keep_recent])
-            to_delete = [t for t in completed_tasks[keep_recent:]]
-            
-            # 删除旧任务
-            deleted_count = 0
-            for task in to_delete:
-                self._task_file(task["id"]).unlink()
-                deleted_count += 1
-            
-            return json.dumps({
-                "success": True,
-                "message": f"已清理 {deleted_count} 个已完成的旧任务",
-                "remaining": {
-                    "active": len(active_tasks),
-                    "completed": min(len(completed_tasks), keep_recent),
-                    "total": len(active_tasks) + min(len(completed_tasks), keep_recent)
-                }
             }, ensure_ascii=False, indent=2)
 
 
@@ -818,7 +778,7 @@ def task_clear() -> str:
     """
     清空所有任务。
     
-    此操作不可恢复！
+    警告：此操作不可恢复！
     
     Returns:
         操作结果
@@ -826,24 +786,6 @@ def task_clear() -> str:
     session_id = get_current_session()
     manager = get_task_manager(session_id)
     return manager.clear_all()
-
-
-@tool
-def task_cleanup(keep_recent: int = 10) -> str:
-    """
-    清理任务列表，移除已完成的旧任务。
-    
-    当任务列表过长时使用，保留最近的任务和未完成的任务。
-    
-    Args:
-        keep_recent: 保留的已完成任务数量，默认10个
-        
-    Returns:
-        清理结果
-    """
-    session_id = get_current_session()
-    manager = get_task_manager(session_id)
-    return manager.cleanup_completed(keep_recent)
 
 
 # ==================== 工具列表 ====================
@@ -858,8 +800,7 @@ TASK_MANAGER_TOOLS = [
     task_visualize,
     task_list,
     task_delete,
-    task_clear,
-    task_cleanup
+    task_clear
 ]
 
 
@@ -879,6 +820,5 @@ __all__ = [
     'task_list',
     'task_delete',
     'task_clear',
-    'task_cleanup',
     'TASK_MANAGER_TOOLS'
 ]

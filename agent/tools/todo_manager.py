@@ -3,41 +3,27 @@ TodoManager 工具模块
 
 提供任务管理能力，帮助模型在处理复杂任务时保持注意力：
 1. 状态机管理任务状态
-2. 持久化到 JSON 文件（支持跨会话恢复）
+2. 问责机制：超过N轮不调用时强制提醒
 3. 同一时间只允许一个 in_progress 任务
-4. 问责机制：超过N轮不调用时强制提醒
 
 设计思路：
 - 简单任务不需要调用此工具
 - 复杂任务模型可自行决定调用，用于跟踪进度
-- 任务持久化到磁盘，即使上下文压缩也不会丢失
+- 通过问责机制防止模型遗忘任务状态
 """
-import json
-import threading
 from typing import List, Dict, Any, Optional
-from pathlib import Path
-from datetime import datetime
 from langchain_core.tools import tool
-
-
-# 任务存储根目录
-TASKS_ROOT_DIR = Path(__file__).parent.parent.parent / "tasks"
 
 
 class TodoManager:
     """
-    任务管理器 - 状态机模式 + JSON 持久化
+    任务管理器 - 状态机模式
     
     状态转换规则：
     - pending -> in_progress: 开始任务
     - in_progress -> completed: 完成任务
     - in_progress -> cancelled: 取消任务
     - 同一时间只能有一个任务处于 in_progress 状态
-    
-    持久化：
-    - 任务保存为 JSON 文件
-    - 支持跨会话恢复
-    - 上下文压缩不影响任务状态
     
     问责机制：
     - 记录上次调用后的轮次
@@ -53,50 +39,11 @@ class TodoManager:
     # 问责机制阈值（连续多少轮未调用后提醒）
     ACCOUNTABILITY_THRESHOLD = 3
     
-    def __init__(self, session_id: str = "default"):
-        """
-        初始化任务管理器
-        
-        Args:
-            session_id: 会话ID，用于区分不同会话的任务文件
-        """
-        self.session_id = session_id
+    def __init__(self):
+        """初始化任务管理器"""
         self.items: List[Dict[str, Any]] = []
         self._turns_since_last_update: int = 0
         self._last_rendered: str = ""
-        self._lock = threading.Lock()
-        
-        # 任务文件路径
-        self.tasks_dir = TASKS_ROOT_DIR / session_id
-        self.tasks_dir.mkdir(parents=True, exist_ok=True)
-        self.tasks_file = self.tasks_dir / "todos.json"
-        
-        # 从文件加载任务
-        self._load_from_file()
-    
-    def _load_from_file(self) -> None:
-        """从 JSON 文件加载任务"""
-        if self.tasks_file.exists():
-            try:
-                data = json.loads(self.tasks_file.read_text(encoding="utf-8"))
-                self.items = data.get("items", [])
-                self._turns_since_last_update = data.get("turns_since_last_update", 0)
-            except (json.JSONDecodeError, Exception):
-                self.items = []
-                self._turns_since_last_update = 0
-    
-    def _save_to_file(self) -> None:
-        """保存任务到 JSON 文件"""
-        data = {
-            "session_id": self.session_id,
-            "items": self.items,
-            "turns_since_last_update": self._turns_since_last_update,
-            "updated_at": datetime.now().isoformat()
-        }
-        self.tasks_file.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-        )
     
     def update(self, items: List[Dict[str, Any]]) -> str:
         """
@@ -118,48 +65,42 @@ class TodoManager:
         Raises:
             ValueError: 当 in_progress 任务超过1个时
         """
-        with self._lock:
-            validated = []
-            in_progress_count = 0
+        validated = []
+        in_progress_count = 0
+        
+        for item in items:
+            status = item.get("status", self.STATUS_PENDING)
             
-            for item in items:
-                status = item.get("status", self.STATUS_PENDING)
-                
-                # 统计 in_progress 数量
-                if status == self.STATUS_IN_PROGRESS:
-                    in_progress_count += 1
-                
-                # 验证状态值
-                valid_statuses = [
-                    self.STATUS_PENDING,
-                    self.STATUS_IN_PROGRESS,
-                    self.STATUS_COMPLETED,
-                    self.STATUS_CANCELLED
-                ]
-                if status not in valid_statuses:
-                    status = self.STATUS_PENDING
-                
-                validated.append({
-                    "id": item.get("id", ""),
-                    "text": item.get("text", ""),
-                    "status": status,
-                    "updated_at": datetime.now().isoformat()
-                })
+            # 统计 in_progress 数量
+            if status == self.STATUS_IN_PROGRESS:
+                in_progress_count += 1
             
-            # 关键约束：同一时间只允许一个 in_progress
-            if in_progress_count > 1:
-                raise ValueError(
-                    f"状态约束违反：同一时间只能有一个任务处于 in_progress 状态，"
-                    f"当前有 {in_progress_count} 个 in_progress 任务。"
-                )
+            # 验证状态值
+            valid_statuses = [
+                self.STATUS_PENDING,
+                self.STATUS_IN_PROGRESS,
+                self.STATUS_COMPLETED,
+                self.STATUS_CANCELLED
+            ]
+            if status not in valid_statuses:
+                status = self.STATUS_PENDING
             
-            self.items = validated
-            self._turns_since_last_update = 0  # 重置计数器
-            
-            # 持久化到文件
-            self._save_to_file()
-            
-            return self.render()
+            validated.append({
+                "id": item.get("id", ""),
+                "text": item.get("text", ""),
+                "status": status
+            })
+        
+        # 关键约束：同一时间只允许一个 in_progress
+        if in_progress_count > 1:
+            raise ValueError(
+                f"状态约束违反：同一时间只能有一个任务处于 in_progress 状态，"
+                f"当前有 {in_progress_count} 个 in_progress 任务。"
+            )
+        
+        self.items = validated
+        self._turns_since_last_update = 0  # 重置计数器
+        return self.render()
     
     def render(self) -> str:
         """
@@ -171,7 +112,7 @@ class TodoManager:
         if not self.items:
             return "当前没有待办任务"
         
-        lines = ["任务列表", ""]
+        lines = ["[任务列表]", ""]
         
         # 按状态排序：in_progress > pending > completed/cancelled
         status_order = {
@@ -183,30 +124,57 @@ class TodoManager:
         
         sorted_items = sorted(
             self.items,
-            key=lambda x: status_order.get(x.get("status", ""), 99)
+            key=lambda x: status_order.get(x["status"], 99)
         )
         
+        # 找到当前进行中的任务和下一个待处理任务
+        current_task = None
+        next_pending_task = None
+        
         for item in sorted_items:
-            status = item.get("status", "")
-            text = item.get("text", "")
-            id_ = item.get("id", "")
+            status = item["status"]
+            text = item["text"]
+            task_id = item["id"]
             
+            # 状态标识
             if status == self.STATUS_IN_PROGRESS:
-                lines.append(f"🔄 [{id_}] {text} (进行中)")
-            elif status == self.STATUS_PENDING:
-                lines.append(f"⏳ [{id_}] {text} (待处理)")
+                icon = "[进行中]"
+                current_task = item
             elif status == self.STATUS_COMPLETED:
-                lines.append(f"✅ [{id_}] {text} (已完成)")
+                icon = "[已完成]"
             elif status == self.STATUS_CANCELLED:
-                lines.append(f"❌ [{id_}] {text} (已取消)")
+                icon = "[已取消]"
+            else:  # pending
+                icon = "[待处理]"
+                if next_pending_task is None:
+                    next_pending_task = item
+            
+            lines.append(f"{icon} [{task_id}] {text}")
         
-        # 统计
-        completed = sum(1 for i in self.items if i.get("status") == self.STATUS_COMPLETED)
+        # 统计信息
         total = len(self.items)
-        lines.append("")
-        lines.append(f"进度: {completed}/{total} 已完成")
+        completed = sum(1 for i in self.items if i["status"] == self.STATUS_COMPLETED)
+        pending = sum(1 for i in self.items if i["status"] == self.STATUS_PENDING)
+        in_progress = sum(1 for i in self.items if i["status"] == self.STATUS_IN_PROGRESS)
         
-        return "\n".join(lines)
+        lines.append("")
+        lines.append(f"统计：总计 {total} | 进行中 {in_progress} | 待处理 {pending} | 已完成 {completed}")
+        
+        # 添加下一步行动提示
+        if current_task:
+            lines.append("")
+            lines.append(f"当前任务：[{current_task['id']}] {current_task['text']}")
+            lines.append("完成后请立即调用 todo_manager 更新状态为 completed")
+        elif next_pending_task and in_progress == 0:
+            # 没有进行中的任务但有待处理的任务，提示开始下一个
+            lines.append("")
+            lines.append(f"注意：有 {pending} 个待处理任务但没有进行中的任务")
+            lines.append(f"请开始执行 [{next_pending_task['id']}] {next_pending_task['text']}")
+            lines.append("并调用 todo_manager 将其状态更新为 in_progress")
+        
+        result = "\n".join(lines)
+        self._last_rendered = result
+        return result
     
     def increment_turn(self) -> bool:
         """
@@ -217,11 +185,8 @@ class TodoManager:
         Returns:
             是否超过阈值（需要提醒）
         """
-        with self._lock:
-            self._turns_since_last_update += 1
-            # 持久化
-            self._save_to_file()
-            return self._turns_since_last_update > self.ACCOUNTABILITY_THRESHOLD
+        self._turns_since_last_update += 1
+        return self._turns_since_last_update > self.ACCOUNTABILITY_THRESHOLD
     
     def should_remind(self) -> bool:
         """
@@ -294,43 +259,12 @@ class TodoManager:
         """
         清空任务列表
         
-        只有当所有任务都已完成或取消时才允许清空。
-        
         Returns:
-            确认消息或错误提示
+            确认消息
         """
-        with self._lock:
-            # 检查是否有未完成的任务
-            active_statuses = [self.STATUS_PENDING, self.STATUS_IN_PROGRESS]
-            active_tasks = [t for t in self.items if t.get("status") in active_statuses]
-            
-            if active_tasks:
-                active_list = "\n".join([f"  - [{t['id']}] {t['text']} ({t['status']})" for t in active_tasks])
-                return f"""⚠️ 无法清空：还有 {len(active_tasks)} 个未完成的任务
-
-未完成任务：
-{active_list}
-
-请先完成这些任务或将它们标记为 cancelled 后再清空。"""
-            
-            # 所有任务都已完成或取消，允许清空
-            self.items = []
-            self._turns_since_last_update = 0
-            self._save_to_file()
-        return "✅ 任务列表已清空（所有任务已完成）"
-    
-    def is_all_completed(self) -> bool:
-        """
-        检查所有任务是否都已完成
-        
-        Returns:
-            是否所有任务都是 completed 或 cancelled
-        """
-        if not self.items:
-            return True
-        
-        terminal_statuses = [self.STATUS_COMPLETED, self.STATUS_CANCELLED]
-        return all(item.get("status") in terminal_statuses for item in self.items)
+        self.items = []
+        self._turns_since_last_update = 0
+        return "任务列表已清空"
 
 
 # ==================== 会话级别的 TodoManager 管理 ====================
@@ -351,15 +285,13 @@ def get_todo_manager(session_id: str) -> TodoManager:
         TodoManager 实例
     """
     if session_id not in _session_managers:
-        _session_managers[session_id] = TodoManager(session_id)
+        _session_managers[session_id] = TodoManager()
     return _session_managers[session_id]
 
 
 def remove_todo_manager(session_id: str) -> None:
     """
-    删除会话的 TodoManager 实例（清理内存缓存）
-    
-    注意：任务文件仍保留在磁盘上，支持后续恢复
+    删除会话的 TodoManager 实例
     
     Args:
         session_id: 会话ID
@@ -372,6 +304,8 @@ def remove_todo_manager(session_id: str) -> None:
 
 # 用于在工具调用时传递 session_id 的上下文变量
 # 由于 LangChain 工具不支持额外的上下文参数，我们使用 thread-local 存储
+import threading
+
 _current_session_id = threading.local()
 
 
@@ -390,23 +324,13 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
     """
     管理任务列表，用于跟踪复杂任务的进度。
     
-    **核心规则：必须传入完整的任务列表，不是只传新增的任务！**
+    **重要规则：每次完成一个任务步骤后，必须立即调用此工具更新状态！**
     
-    这个工具会完全替换（复写）现有任务列表，所以每次调用都要传入所有任务。
-    
-    **工作流程：**
-    1. 开始时：创建完整的任务列表（只一次）
-    2. 执行时：传入完整列表，只更新状态
-    3. 完成时：所有任务标记为 completed
-    
-    **状态类型：** pending, in_progress, completed, cancelled
-    
-    **约束：**
-    - 同一时间只能有一个任务处于 in_progress 状态
-    - 任务会持久化到磁盘，不会丢失
+    状态类型：pending, in_progress, completed, cancelled
+    约束：同一时间只能有一个任务处于 in_progress 状态。
     
     Args:
-        items: 完整的任务列表（必须包含所有任务），每个任务包含：
+        items: 任务列表，每个任务包含：
             - id: 任务唯一标识（如 "1", "2"）
             - text: 任务描述
             - status: 状态（pending/in_progress/completed/cancelled）
@@ -419,9 +343,9 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
         manager = get_todo_manager(session_id)
         return manager.update(items)
     except ValueError as e:
-        return f"错误: {str(e)}"
+        return f"错误：{str(e)}"
     except Exception as e:
-        return f"更新任务列表失败: {str(e)}"
+        return f"更新任务列表失败：{str(e)}"
 
 
 @tool
@@ -445,28 +369,7 @@ def get_todo_status() -> str:
     if status["needs_attention"]:
         result += f"\n\n注意：已经 {status['turns_since_last_update']} 轮未更新任务状态"
     
-    # 添加完成状态检查
-    if manager.is_all_completed():
-        result += "\n\n✅ 所有任务已完成！可以开始新的任务了。"
-    
     return result
-
-
-@tool
-def clear_todo_list() -> str:
-    """
-    清空任务列表。
-    
-    **重要：只有当所有任务都已完成或取消时才能清空！**
-    
-    如果还有未完成的任务，请先将它们标记为 completed 或 cancelled。
-    
-    Returns:
-        操作结果
-    """
-    session_id = get_current_session()
-    manager = get_todo_manager(session_id)
-    return manager.clear()
 
 
 # ==================== 导出 ====================
@@ -475,10 +378,8 @@ __all__ = [
     'TodoManager',
     'todo_manager',
     'get_todo_status',
-    'clear_todo_list',
     'get_todo_manager',
     'remove_todo_manager',
     'set_current_session',
-    'get_current_session',
-    'TASKS_ROOT_DIR'
+    'get_current_session'
 ]

@@ -66,18 +66,15 @@ SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责
 
 任务完成后，必须按以下格式返回摘要：
 
-```
-## 执行结果
-[成功/失败/部分完成]
+执行结果：[成功/失败/部分完成]
 
-## 执行过程
+执行过程：
 1. [第一步操作] -> [结果]
 2. [第二步操作] -> [结果]
 ...
 
-## 关键信息
+关键信息：
 [提取任务相关的关键信息，供主Agent参考]
-```
 
 ## 注意事项
 
@@ -226,16 +223,16 @@ class SubAgentExecutor:
         ]
         
         # 构建用户消息，添加任务边界提醒
-        user_content = f"""## 任务
+        user_content = f"""任务：
 {task_description}
 
-## 执行提醒
-- 你的执行预算: {self.SUB_AGENT_RECURSION_LIMIT} 步（每次工具调用消耗 1 步）
+执行提醒：
+- 你的执行预算：{self.SUB_AGENT_RECURSION_LIMIT} 步（每次工具调用消耗 1 步）
 - 严格限定在任务范围内，不要扩展
 - 完成后立即返回，不要继续探索
 - 剩余步数少于 10 步时，系统会强制你返回结果
 
-## 任务完成标准
+任务完成标准：
 请明确以下问题后再开始执行：
 1. 任务的核心目标是什么？
 2. 最少需要几个步骤完成？
@@ -383,45 +380,46 @@ def spawn_sub_agent(task: str, context: str = "") -> str:
     result = executor.execute(task, context)
     
     # 格式化返回结果 - 状态必须非常明确
-    output_lines = ["## 子Agent执行报告", ""]
+    output_lines = ["[子Agent执行报告]", ""]
     
     # 步数使用情况
     steps_used = result.get("steps_used", 0)
     max_steps = SubAgentExecutor.SUB_AGENT_RECURSION_LIMIT
-    output_lines.append(f"步数使用: {steps_used}/{max_steps}")
+    output_lines.append(f"步数使用：{steps_used}/{max_steps}")
     
     # 状态标识（使用醒目的格式）
     if result["success"]:
-        output_lines.append("## 执行状态: 成功")
+        output_lines.append("")
+        output_lines.append("执行状态：成功")
         status_hint = "任务已成功完成，可以标记为 completed"
     else:
-        output_lines.append("## 执行状态: 失败")
+        output_lines.append("")
+        output_lines.append("执行状态：失败")
         status_hint = "任务执行失败，请勿标记为 completed！需要重试或调整方案"
     
     # 失败原因（如果有）
     if not result["success"] and result.get("error"):
-        output_lines.append("")
-        output_lines.append(f"失败原因: {result.get('error')}")
+        output_lines.append(f"失败原因：{result.get('error')}")
     
     # 工具调用摘要（最多显示前10个）
     if result["tool_calls"]:
         output_lines.append("")
-        output_lines.append("### 工具调用记录")
+        output_lines.append("工具调用记录：")
         for i, tc in enumerate(result["tool_calls"][:10], 1):
             args_str = ", ".join(f"{k}={v}" for k, v in tc["args"].items())
-            output_lines.append(f"{i}. `{tc['name']}`({args_str})")
+            output_lines.append(f"  {i}. {tc['name']}({args_str})")
         if len(result["tool_calls"]) > 10:
-            output_lines.append(f"   ... 还有 {len(result['tool_calls']) - 10} 个工具调用")
+            output_lines.append(f"  ... 还有 {len(result['tool_calls']) - 10} 个工具调用")
     
     # 执行摘要
     output_lines.append("")
-    output_lines.append("### 执行摘要")
+    output_lines.append("执行摘要：")
     output_lines.append(result["summary"])
     
     # 添加明确的下一步指引
     output_lines.append("")
     output_lines.append("---")
-    output_lines.append(f"下一步操作: {status_hint}")
+    output_lines.append(f"下一步操作：{status_hint}")
     if result["success"]:
         output_lines.append("- 调用 todo_manager 或 task_update 将当前任务标记为 completed")
         output_lines.append("- 继续执行下一个任务")

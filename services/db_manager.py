@@ -60,12 +60,12 @@ class DatabaseManager:
     def init_db(self):
         """初始化数据库（创建所有表）"""
         Base.metadata.create_all(self.engine)
-        print("✅ 数据库表创建成功")
+        print("数据库表创建成功")
     
     def drop_db(self):
         """删除所有表（谨慎使用）"""
         Base.metadata.drop_all(self.engine)
-        print("⚠️ 数据库表已删除")
+        print("[警告] 数据库表已删除")
     
     @contextmanager
     def get_session(self) -> Generator[DBSession, None, None]:
