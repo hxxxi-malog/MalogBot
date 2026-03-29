@@ -459,14 +459,14 @@ class TaskManager:
         可视化任务图
         
         Returns:
-            ASCII 风格的任务图
+            文本风格的任务图
         """
         tasks = self._load_all()
         
         if not tasks:
-            return "📋 任务图为空"
+            return "任务图为空"
         
-        lines = ["📊 **任务图**", ""]
+        lines = ["任务图", ""]
         
         # 按状态分组
         by_status = {
@@ -484,33 +484,33 @@ class TaskManager:
         
         # 渲染进行中的任务
         if by_status[self.STATUS_IN_PROGRESS]:
-            lines.append("### 🔄 进行中")
+            lines.append("### 进行中")
             for task in by_status[self.STATUS_IN_PROGRESS]:
-                blocked = "⚠️ 被阻塞" if task.get("blockedBy") else ""
+                blocked = "[被阻塞]" if task.get("blockedBy") else ""
                 lines.append(f"  [{task['id']}] {task['subject']} {blocked}")
             lines.append("")
         
         # 渲染待处理的任务
         if by_status[self.STATUS_PENDING]:
-            lines.append("### ⏳ 待处理")
+            lines.append("### 待处理")
             for task in by_status[self.STATUS_PENDING]:
                 if task.get("blockedBy"):
                     deps = ", ".join(str(d) for d in task["blockedBy"])
                     lines.append(f"  [{task['id']}] {task['subject']} (等待: {deps})")
                 else:
-                    lines.append(f"  [{task['id']}] {task['subject']} ✅ 可执行")
+                    lines.append(f"  [{task['id']}] {task['subject']} [可执行]")
             lines.append("")
         
         # 渲染已完成的任务
         if by_status[self.STATUS_COMPLETED]:
-            lines.append("### ✅ 已完成")
+            lines.append("### 已完成")
             for task in by_status[self.STATUS_COMPLETED]:
                 lines.append(f"  [{task['id']}] {task['subject']}")
             lines.append("")
         
         # 渲染失败/取消的任务
         if by_status[self.STATUS_FAILED] or by_status[self.STATUS_CANCELLED]:
-            lines.append("### ❌ 失败/取消")
+            lines.append("### 失败/取消")
             for task in by_status[self.STATUS_FAILED]:
                 lines.append(f"  [{task['id']}] {task['subject']} (失败)")
             for task in by_status[self.STATUS_CANCELLED]:
@@ -778,7 +778,7 @@ def task_clear() -> str:
     """
     清空所有任务。
     
-    ⚠️ 此操作不可恢复！
+    此操作不可恢复！
     
     Returns:
         操作结果

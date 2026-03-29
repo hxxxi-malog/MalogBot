@@ -242,10 +242,10 @@ Use these indicators in the report:
 
 | Status | Symbol | Color | Description |
 |--------|--------|-------|-------------|
-| Healthy | ✅ | Green | Within normal range |
-| Warning | ⚠️ | Yellow | Approaching threshold |
-| Critical | ❌ | Red | Exceeds threshold |
-| Unknown | ❓ | Gray | Unable to determine |
+| Healthy | [OK] | Green | Within normal range |
+| Warning | [!] | Yellow | Approaching threshold |
+| Critical | [X] | Red | Exceeds threshold |
+| Unknown | [?] | Gray | Unable to determine |
 
 ---
 

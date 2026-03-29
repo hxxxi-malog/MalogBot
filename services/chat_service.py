@@ -661,7 +661,7 @@ class ChatService:
 
             yield {
                 "type": "tool_result",
-                "content": f"命令已执行: `{command}`\n\n**结果:**\n```\n{result}\n```"
+                "content": f"命令已执行: {command}\n\n结果:\n```\n{result}\n```"
             }
 
             # 如果有用户消息，继续对话
@@ -788,7 +788,7 @@ class ChatService:
                 # 没有原始消息，返回取消信息
                 yield {
                     "type": "done",
-                    "content": "❌ 用户已取消命令执行。"
+                    "content": "用户已取消命令执行。"
                 }
 
         except Exception as e:

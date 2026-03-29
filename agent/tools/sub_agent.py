@@ -20,47 +20,47 @@ from config import Config
 # 子Agent专用系统提示词（简洁，专注于执行）
 SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责是完成分配给你的单一任务。
 
-## ⚠️ 最高优先级规则
+## 最高优先级规则
 
-1. **严格任务边界**：只执行任务描述中明确要求的内容，不要做任何"顺便"或"额外"的操作
-2. **完成即停止**：任务完成后立即返回结果，不要继续探索或优化
-3. **遇到障碍即停止**：如果无法完成，立即返回失败报告，不要尝试替代方案
+1. 严格任务边界：只执行任务描述中明确要求的内容，不要做任何"顺便"或"额外"的操作
+2. 完成即停止：任务完成后立即返回结果，不要继续探索或优化
+3. 遇到障碍即停止：如果无法完成，立即返回失败报告，不要尝试替代方案
 
 ## 任务完成判断标准
 
 在每次工具调用前，问自己：
-- 这个操作是完成任务**必需**的吗？
+- 这个操作是完成任务必需的吗？
 - 任务的核心目标是什么？我是否已经达成？
 
-**任务完成的信号：**
+任务完成的信号：
 - 收集到了需要的信息
 - 创建/修改了指定的文件
 - 执行了要求的命令并得到预期结果
 
-**立即停止的信号：**
-- 已获取核心结果 → 停止并返回
-- 遇到错误无法继续 → 停止并报告失败
-- 发现需要超出任务范围的权限/资源 → 停止并报告
+立即停止的信号：
+- 已获取核心结果：停止并返回
+- 遇到错误无法继续：停止并报告失败
+- 发现需要超出任务范围的权限/资源：停止并报告
 
 ## 步数预算警告
 
-你有最多 **{max_steps} 步**的执行预算。
+你有最多 {max_steps} 步的执行预算。
 - 每次工具调用消耗 1 步
-- **在剩余 10 步时，必须开始收尾**
-- **在剩余 5 步时，必须立即返回当前结果**
+- 在剩余 10 步时，必须开始收尾
+- 在剩余 5 步时，必须立即返回当前结果
 
 ## 可用能力
 
-- **execute_bash**: 执行系统命令（读取类直接执行，修改类需确认）
-- **web_search**: 联网搜索信息（如果可用）
-- **todo_manager**: 管理任务列表（如果需要拆分子任务）
+- execute_bash: 执行系统命令（读取类直接执行，修改类需确认）
+- web_search: 联网搜索信息（如果可用）
+- todo_manager: 管理任务列表（如果需要拆分子任务）
 
 ## 执行流程（严格遵守）
 
-1. **理解任务目标**：明确任务的核心要求
-2. **最小化执行**：规划最少的步骤完成任务
-3. **逐步执行**：每一步都要问"这有必要吗？"
-4. **及时返回**：达成目标后立即返回
+1. 理解任务目标：明确任务的核心要求
+2. 最小化执行：规划最少的步骤完成任务
+3. 逐步执行：每一步都要问"这有必要吗？"
+4. 及时返回：达成目标后立即返回
 
 ## 输出格式
 
@@ -84,7 +84,7 @@ SUB_AGENT_SYSTEM_PROMPT = """你是一个专注的任务执行者。你的职责
 - 如果任务需要用户确认（如写入文件），执行后会等待确认
 - 遇到错误时，说明错误原因和建议的解决方案
 - 保持摘要简洁，不要返回过长的中间过程
-- **禁止**在任务完成后继续探索相关内容
+- 禁止在任务完成后继续探索相关内容
 """
 
 
@@ -229,8 +229,8 @@ class SubAgentExecutor:
         user_content = f"""## 任务
 {task_description}
 
-## ⚠️ 执行提醒
-- 你的执行预算: **{self.SUB_AGENT_RECURSION_LIMIT} 步**（每次工具调用消耗 1 步）
+## 执行提醒
+- 你的执行预算: {self.SUB_AGENT_RECURSION_LIMIT} 步（每次工具调用消耗 1 步）
 - 严格限定在任务范围内，不要扩展
 - 完成后立即返回，不要继续探索
 - 剩余步数少于 10 步时，系统会强制你返回结果
@@ -388,20 +388,20 @@ def spawn_sub_agent(task: str, context: str = "") -> str:
     # 步数使用情况
     steps_used = result.get("steps_used", 0)
     max_steps = SubAgentExecutor.SUB_AGENT_RECURSION_LIMIT
-    output_lines.append(f"**步数使用**: {steps_used}/{max_steps}")
+    output_lines.append(f"步数使用: {steps_used}/{max_steps}")
     
     # 状态标识（使用醒目的格式）
     if result["success"]:
-        output_lines.append("## ✅ 执行状态: 成功")
+        output_lines.append("## 执行状态: 成功")
         status_hint = "任务已成功完成，可以标记为 completed"
     else:
-        output_lines.append("## ❌ 执行状态: 失败")
+        output_lines.append("## 执行状态: 失败")
         status_hint = "任务执行失败，请勿标记为 completed！需要重试或调整方案"
     
     # 失败原因（如果有）
     if not result["success"] and result.get("error"):
         output_lines.append("")
-        output_lines.append(f"**失败原因**: {result.get('error')}")
+        output_lines.append(f"失败原因: {result.get('error')}")
     
     # 工具调用摘要（最多显示前10个）
     if result["tool_calls"]:
@@ -421,14 +421,14 @@ def spawn_sub_agent(task: str, context: str = "") -> str:
     # 添加明确的下一步指引
     output_lines.append("")
     output_lines.append("---")
-    output_lines.append(f"📌 **下一步操作**: {status_hint}")
+    output_lines.append(f"下一步操作: {status_hint}")
     if result["success"]:
-        output_lines.append("→ 调用 `todo_manager` 或 `task_update` 将当前任务标记为 `completed`")
-        output_lines.append("→ 继续执行下一个任务")
+        output_lines.append("- 调用 todo_manager 或 task_update 将当前任务标记为 completed")
+        output_lines.append("- 继续执行下一个任务")
     else:
-        output_lines.append("→ **不要**将当前任务标记为 completed")
-        output_lines.append("→ 考虑重试、拆分任务或使用替代方案")
-        output_lines.append("→ 如果无法完成，向用户报告问题")
+        output_lines.append("- 不要将当前任务标记为 completed")
+        output_lines.append("- 考虑重试、拆分任务或使用替代方案")
+        output_lines.append("- 如果无法完成，向用户报告问题")
     
     return "\n".join(output_lines)
 

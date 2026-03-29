@@ -293,10 +293,10 @@ def execute_bash_direct(command: str) -> str:
         # 1. 解析命令
         tokens, parse_error = parse_command(command)
         if parse_error:
-            return f"❌ {parse_error}"
+            return f"{parse_error}"
         
         if not tokens:
-            return "❌ 空命令"
+            return "空命令"
         
         # 2. 获取基础命令并检查安全性
         base_cmd = get_base_command(tokens)
@@ -304,7 +304,7 @@ def execute_bash_direct(command: str) -> str:
         # 最后一次安全检查（双重保险）
         is_dangerous, danger_reason = check_dangerous_command(command)
         if is_dangerous:
-            return f"❌ 安全拦截: {danger_reason}"
+            return f"安全拦截: {danger_reason}"
         
         # 3. 构建执行命令
         # 对于简单命令，直接执行
@@ -336,19 +336,19 @@ def execute_bash_direct(command: str) -> str:
             )
 
         if result.returncode == 0:
-            return result.stdout.strip() if result.stdout.strip() else "✅ 命令执行成功（无输出）"
+            return result.stdout.strip() if result.stdout.strip() else "命令执行成功（无输出）"
         else:
             error_msg = result.stderr.strip() if result.stderr.strip() else f"退出码 {result.returncode}"
-            return f"❌ 错误: {error_msg}"
+            return f"错误: {error_msg}"
 
     except subprocess.TimeoutExpired:
-        return f"❌ 命令执行超时（{Config.BASH_TIMEOUT}秒）"
+        return f"命令执行超时（{Config.BASH_TIMEOUT}秒）"
     except FileNotFoundError:
-        return f"❌ 命令不存在: {base_cmd}"
+        return f"命令不存在: {base_cmd}"
     except PermissionError:
-        return f"❌ 权限不足: {base_cmd}"
+        return f"权限不足: {base_cmd}"
     except Exception as e:
-        return f"❌ 执行错误: {str(e)}"
+        return f"执行错误: {str(e)}"
 
 
 # ==================== LangChain 工具定义 ====================
@@ -381,7 +381,7 @@ def execute_bash(command: str) -> str:
     
     # 3. 如果检测到命令注入，直接拒绝
     if is_dangerous and "注入" in danger_reason:
-        return f"❌ 安全拦截: {danger_reason}。请使用安全的命令格式。"
+        return f"安全拦截: {danger_reason}。请使用安全的命令格式。"
     
     # 4. 如果是安全的读取类命令，直接执行
     if cmd_type == "read" and not is_dangerous:
@@ -389,9 +389,9 @@ def execute_bash(command: str) -> str:
     
     # 5. 执行类命令或危险命令，需要用户确认
     if is_dangerous:
-        confirm_message = f"⚠️ 危险命令检测: {danger_reason}"
+        confirm_message = f"[危险命令检测] {danger_reason}"
     else:
-        confirm_message = f"📋 执行类命令需要确认"
+        confirm_message = f"执行类命令需要确认"
     
     # 返回特殊格式的JSON，等待用户确认
     return json.dumps({

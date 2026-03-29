@@ -110,9 +110,9 @@ class TodoManager:
             格式化的任务列表字符串
         """
         if not self.items:
-            return "📋 当前没有待办任务"
+            return "当前没有待办任务"
         
-        lines = ["📋 **任务列表**", ""]
+        lines = ["任务列表", ""]
         
         # 按状态排序：in_progress > pending > completed/cancelled
         status_order = {
@@ -136,20 +136,20 @@ class TodoManager:
             text = item["text"]
             task_id = item["id"]
             
-            # 状态图标
+            # 状态标识
             if status == self.STATUS_IN_PROGRESS:
-                icon = "🔄"
+                icon = "[进行中]"
                 current_task = item
             elif status == self.STATUS_COMPLETED:
-                icon = "✅"
+                icon = "[已完成]"
             elif status == self.STATUS_CANCELLED:
-                icon = "❌"
+                icon = "[已取消]"
             else:  # pending
-                icon = "⏳"
+                icon = "[待处理]"
                 if next_pending_task is None:
                     next_pending_task = item
             
-            lines.append(f"{icon} [{task_id}] {text} ({status})")
+            lines.append(f"{icon} [{task_id}] {text}")
         
         # 统计信息
         total = len(self.items)
@@ -158,17 +158,17 @@ class TodoManager:
         in_progress = sum(1 for i in self.items if i["status"] == self.STATUS_IN_PROGRESS)
         
         lines.append("")
-        lines.append(f"📊 统计: 总计 {total} | 进行中 {in_progress} | 待处理 {pending} | 已完成 {completed}")
+        lines.append(f"统计: 总计 {total} | 进行中 {in_progress} | 待处理 {pending} | 已完成 {completed}")
         
         # 添加下一步行动提示
         if current_task:
             lines.append("")
-            lines.append(f"💡 当前任务: [{current_task['id']}] {current_task['text']}")
+            lines.append(f"当前任务: [{current_task['id']}] {current_task['text']}")
             lines.append("   完成后请立即调用 todo_manager 更新状态为 completed")
         elif next_pending_task and in_progress == 0:
             # 没有进行中的任务但有待处理的任务，提示开始下一个
             lines.append("")
-            lines.append(f"⚠️ 注意: 有 {pending} 个待处理任务但没有进行中的任务")
+            lines.append(f"注意: 有 {pending} 个待处理任务但没有进行中的任务")
             lines.append(f"   请开始执行 [{next_pending_task['id']}] {next_pending_task['text']}")
             lines.append("   并调用 todo_manager 将其状态更新为 in_progress")
         
@@ -222,16 +222,16 @@ class TodoManager:
         turns = self._turns_since_last_update
         
         reminder = f"""
-⚠️ **任务状态提醒**
+[任务状态提醒]
 
 你已经连续 {turns} 轮没有更新任务状态了。
 当前任务可能需要关注：
 
 {self.render()}
 
-**请考虑：**
-1. 如果当前任务正在进行中，继续执行后调用 `todo_manager` 更新状态
-2. 如果任务已完成，将状态更新为 `completed`
+请考虑：
+1. 如果当前任务正在进行中，继续执行后调用 todo_manager 更新状态
+2. 如果任务已完成，将状态更新为 completed
 3. 如果遇到阻塞，考虑拆分任务或调整计划
 
 保持任务列表的更新有助于你更好地追踪复杂任务的进度。
@@ -264,7 +264,7 @@ class TodoManager:
         """
         self.items = []
         self._turns_since_last_update = 0
-        return "📋 任务列表已清空"
+        return "任务列表已清空"
 
 
 # ==================== 会话级别的 TodoManager 管理 ====================
@@ -343,9 +343,9 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
         manager = get_todo_manager(session_id)
         return manager.update(items)
     except ValueError as e:
-        return f"❌ 错误: {str(e)}"
+        return f"错误: {str(e)}"
     except Exception as e:
-        return f"❌ 更新任务列表失败: {str(e)}"
+        return f"更新任务列表失败: {str(e)}"
 
 
 @tool
@@ -362,12 +362,12 @@ def get_todo_status() -> str:
     status = manager.get_status()
     
     if not status["items"]:
-        return "📋 当前没有待办任务。如果需要跟踪复杂任务，可以使用 todo_manager 创建任务列表。"
+        return "当前没有待办任务。如果需要跟踪复杂任务，可以使用 todo_manager 创建任务列表。"
     
     result = manager.render()
     
     if status["needs_attention"]:
-        result += f"\n\n⚠️ 注意：已经 {status['turns_since_last_update']} 轮未更新任务状态"
+        result += f"\n\n注意：已经 {status['turns_since_last_update']} 轮未更新任务状态"
     
     return result
 
