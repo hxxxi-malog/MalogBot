@@ -578,6 +578,46 @@ class TaskManager:
                 "success": True,
                 "message": f"已清空 {count} 个任务"
             }, ensure_ascii=False, indent=2)
+    
+    def cleanup_completed(self, keep_recent: int = 10) -> str:
+        """
+        清理已完成的任务，保留最近的几个
+        
+        Args:
+            keep_recent: 保留的已完成任务数量
+            
+        Returns:
+            清理结果
+        """
+        with self._lock:
+            all_tasks = self._load_all()
+            
+            # 分类任务
+            completed_tasks = [t for t in all_tasks if t.get("status") == self.STATUS_COMPLETED]
+            active_tasks = [t for t in all_tasks if t.get("status") != self.STATUS_COMPLETED]
+            
+            # 按更新时间排序已完成的任务
+            completed_tasks.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
+            
+            # 保留最近的 N 个已完成任务
+            to_keep = set(t["id"] for t in completed_tasks[:keep_recent])
+            to_delete = [t for t in completed_tasks[keep_recent:]]
+            
+            # 删除旧任务
+            deleted_count = 0
+            for task in to_delete:
+                self._task_file(task["id"]).unlink()
+                deleted_count += 1
+            
+            return json.dumps({
+                "success": True,
+                "message": f"已清理 {deleted_count} 个已完成的旧任务",
+                "remaining": {
+                    "active": len(active_tasks),
+                    "completed": min(len(completed_tasks), keep_recent),
+                    "total": len(active_tasks) + min(len(completed_tasks), keep_recent)
+                }
+            }, ensure_ascii=False, indent=2)
 
 
 # ==================== 会话级别的 TaskManager 管理 ====================
@@ -788,6 +828,24 @@ def task_clear() -> str:
     return manager.clear_all()
 
 
+@tool
+def task_cleanup(keep_recent: int = 10) -> str:
+    """
+    清理任务列表，移除已完成的旧任务。
+    
+    当任务列表过长时使用，保留最近的任务和未完成的任务。
+    
+    Args:
+        keep_recent: 保留的已完成任务数量，默认10个
+        
+    Returns:
+        清理结果
+    """
+    session_id = get_current_session()
+    manager = get_task_manager(session_id)
+    return manager.cleanup_completed(keep_recent)
+
+
 # ==================== 工具列表 ====================
 
 TASK_MANAGER_TOOLS = [
@@ -800,7 +858,8 @@ TASK_MANAGER_TOOLS = [
     task_visualize,
     task_list,
     task_delete,
-    task_clear
+    task_clear,
+    task_cleanup
 ]
 
 
@@ -820,5 +879,6 @@ __all__ = [
     'task_list',
     'task_delete',
     'task_clear',
+    'task_cleanup',
     'TASK_MANAGER_TOOLS'
 ]
