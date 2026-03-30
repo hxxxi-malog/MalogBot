@@ -1,9 +1,9 @@
 """
-三层上下文压缩模块（重构版）
+三层上下文压缩模块
 
 实现三层渐进式上下文压缩策略：
 1. 第一层（Journal层）：原始消息实时存储到JSONL，支持完整恢复
-2. 第二层（Memory层）：关键信息提取向量化存储，作为长期记忆
+2. 第二层（Memory层）：Agent主动存储关键信息，使用Rerank检索
 3. 第三层（Summary层）：上下文摘要，减少当前窗口占用
 
 工作流程：
@@ -13,7 +13,8 @@
    a. 后台线程提取关键信息向量化存储（Memory服务）
    b. LLM生成摘要替换旧消息
    c. 保留最近的几条消息
-4. 需要时可以从JSONL恢复完整上下文
+4. Agent可以主动调用工具存储重要信息到长期记忆
+5. 对话时通过RAG检索相关记忆，使用Rerank过滤高相关性结果
 """
 import json
 import logging
@@ -27,7 +28,7 @@ from config import Config
 from services.db_manager import db_manager
 from services.session_store import session_store
 from services.conversation_journal import conversation_journal
-from services.long_term_memory import long_term_memory, MemoryType
+from services.long_term_memory import long_term_memory, MemoryType, DEFAULT_RELEVANCE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,17 @@ ENABLE_LONG_TERM_MEMORY = os.getenv('ENABLE_LONG_TERM_MEMORY', 'true').lower() =
 # 长期记忆注入的token预算
 MEMORY_TOKEN_BUDGET = int(os.getenv('MEMORY_TOKEN_BUDGET', '2000'))
 
+# 相关性阈值（Rerank 分数阈值）
+MEMORY_RELEVANCE_THRESHOLD = float(os.getenv('MEMORY_RELEVANCE_THRESHOLD', str(DEFAULT_RELEVANCE_THRESHOLD)))
+
 
 class ContextCompactor:
     """
-    三层上下文压缩器（重构版）
+    三层上下文压缩器
     
     整合三种存储层级：
     - Journal（JSONL）：完整原始对话，可恢复
-    - Memory（向量数据库）：关键信息，可检索
+    - Memory（向量数据库）：Agent主动存储的关键信息，RAG检索+Rerank过滤
     - Summary（当前上下文）：压缩摘要，轻量级
     """
     
@@ -61,7 +65,8 @@ class ContextCompactor:
         self,
         keep_recent_tools: int = KEEP_RECENT_TOOL_RESULTS,
         keep_recent_messages: int = KEEP_RECENT_MESSAGES,
-        enable_long_term_memory: bool = ENABLE_LONG_TERM_MEMORY
+        enable_long_term_memory: bool = ENABLE_LONG_TERM_MEMORY,
+        memory_relevance_threshold: float = MEMORY_RELEVANCE_THRESHOLD
     ):
         """
         初始化上下文压缩器
@@ -70,16 +75,18 @@ class ContextCompactor:
             keep_recent_tools: 微观压缩时保留的最近 tool_result 数量
             keep_recent_messages: 压缩后保留的最近消息数量
             enable_long_term_memory: 是否启用长期记忆功能
+            memory_relevance_threshold: 记忆相关性阈值（Rerank分数）
         """
         self.keep_recent_tools = keep_recent_tools
         self.keep_recent_messages = keep_recent_messages
         self.enable_long_term_memory = enable_long_term_memory
+        self.memory_relevance_threshold = memory_relevance_threshold
         
         # 模型上下文窗口
         self.max_context_tokens = conversation_journal.max_context_tokens
         self.compact_threshold = conversation_journal.compact_threshold
     
-    # ==================== 消息追加（集成Journal） ====================
+    # ==================== 消息追加 ====================
     
     def append_message(
         self,
@@ -94,6 +101,7 @@ class ContextCompactor:
         追加消息到Journal（JSONL文件）
         
         这是入口方法，每条消息都会实时存储。
+        Agent可以通过调用 store_memory 工具主动存储重要信息。
         
         Args:
             session_id: 会话ID
@@ -179,17 +187,7 @@ class ContextCompactor:
         return result_messages
     
     def _create_tool_placeholder(self, tool_name: str, original_content: Any, tool_call_id: str = None) -> ToolMessage:
-        """
-        创建工具调用占位符
-        
-        Args:
-            tool_name: 工具名称
-            original_content: 原始内容
-            tool_call_id: 工具调用ID
-            
-        Returns:
-            占位符消息（ToolMessage 类型）
-        """
+        """创建工具调用占位符"""
         content_preview = ""
         if isinstance(original_content, str) and len(original_content) > 100:
             content_preview = f" (内容长度: {len(original_content)} 字符)"
@@ -200,29 +198,11 @@ class ContextCompactor:
     # ==================== 第二层：自动压缩（核心） ====================
     
     def should_auto_compact(self, session_id: str) -> bool:
-        """
-        判断是否需要触发自动压缩
-        
-        基于JSONL文件的token数量判断。
-        
-        Args:
-            session_id: 会话ID
-            
-        Returns:
-            是否需要压缩
-        """
+        """判断是否需要触发自动压缩"""
         return conversation_journal.should_compact(session_id)
     
     def get_context_stats(self, session_id: str) -> Dict[str, Any]:
-        """
-        获取上下文统计信息
-        
-        Args:
-            session_id: 会话ID
-            
-        Returns:
-            统计信息字典
-        """
+        """获取上下文统计信息"""
         return conversation_journal.get_compaction_info(session_id)
     
     def auto_compact(
@@ -282,7 +262,8 @@ class ContextCompactor:
             memory_context = long_term_memory.get_memories_for_context(
                 query=current_query,
                 session_id=session_id,
-                max_tokens=MEMORY_TOKEN_BUDGET
+                max_tokens=MEMORY_TOKEN_BUDGET,
+                relevance_threshold=self.memory_relevance_threshold
             )
         
         # 7. 构建压缩后的消息
@@ -326,20 +307,10 @@ class ContextCompactor:
         return '\n'.join(parts)
     
     def _generate_summary_with_llm(self, messages: List[Dict], llm_client: Any) -> str:
-        """
-        使用 LLM 生成对话摘要
-        
-        Args:
-            messages: 消息列表（字典格式）
-            llm_client: LLM 客户端
-            
-        Returns:
-            摘要文本
-        """
-        # 构建对话文本
+        """使用 LLM 生成对话摘要"""
         conversation_text = "\n".join([
             f"{msg.get('role', 'unknown')}: {str(msg.get('content', ''))[:500]}"
-            for msg in messages[:20]  # 限制长度
+            for msg in messages[:20]
         ])
         
         summary_prompt = f"""请总结以下对话的关键内容，要求：
@@ -364,15 +335,7 @@ class ContextCompactor:
             return self._simple_summary(messages)
     
     def _simple_summary(self, messages: List[Dict]) -> str:
-        """
-        简单摘要方法（不依赖 LLM）
-        
-        Args:
-            messages: 消息列表
-            
-        Returns:
-            摘要文本
-        """
+        """简单摘要方法（不依赖 LLM）"""
         user_messages = [msg for msg in messages if msg.get('role') == 'user']
         assistant_messages = [msg for msg in messages if msg.get('role') == 'assistant']
         tool_messages = [msg for msg in messages if msg.get('role') == 'tool']
@@ -382,7 +345,6 @@ class ContextCompactor:
         for msg in messages:
             content = str(msg.get('content', ''))
             import re
-            # 提取文件路径
             file_patterns = [
                 r'/Users/[\w/]+\.\w+',
                 r'/home/[\w/]+\.\w+',
@@ -413,19 +375,7 @@ class ContextCompactor:
         compact_all: bool = False,
         current_query: str = ""
     ) -> Dict[str, Any]:
-        """
-        手动压缩：通过工具按需触发
-        
-        Args:
-            session_id: 会话ID
-            llm_client: LLM 客户端
-            compact_all: 是否压缩所有历史（包括最近的）
-            current_query: 当前查询
-            
-        Returns:
-            压缩结果信息
-        """
-        # 获取当前Journal状态
+        """手动压缩：通过工具按需触发"""
         journal_info = conversation_journal.get_compaction_info(session_id)
         
         if journal_info['message_count'] == 0:
@@ -434,7 +384,6 @@ class ContextCompactor:
                 "message": "没有可压缩的对话历史"
             }
         
-        # 执行压缩
         compressed, archive_id = self.auto_compact(
             session_id, llm_client, current_query
         )
@@ -445,7 +394,6 @@ class ContextCompactor:
                 "message": "压缩失败"
             }
         
-        # 更新数据库中的消息
         session_store.replace_messages(session_id, compressed)
         
         return {
@@ -468,7 +416,7 @@ class ContextCompactor:
         
         整合三层数据：
         1. 从Journal读取消息（控制token预算）
-        2. 注入相关长期记忆
+        2. 注入相关长期记忆（RAG检索 + Rerank过滤）
         3. 返回统计信息
         
         Args:
@@ -482,6 +430,7 @@ class ContextCompactor:
             'journal_messages': 0,
             'journal_tokens': 0,
             'memory_injected': False,
+            'memory_count': 0,
             'should_compact': False
         }
         
@@ -493,63 +442,39 @@ class ContextCompactor:
         stats['journal_messages'] = len(messages)
         stats['journal_tokens'] = tokens
         
-        # 3. 注入长期记忆
+        # 3. 注入长期记忆（使用 Rerank 过滤）
         if self.enable_long_term_memory and user_query:
             memory_context = long_term_memory.get_memories_for_context(
                 query=user_query,
                 session_id=session_id,
-                max_tokens=MEMORY_TOKEN_BUDGET
+                max_tokens=MEMORY_TOKEN_BUDGET,
+                relevance_threshold=self.memory_relevance_threshold
             )
             
             if memory_context:
-                # 插入到系统消息位置
                 messages.insert(0, {
                     'role': 'system',
                     'content': memory_context
                 })
                 stats['memory_injected'] = True
+                stats['memory_count'] = memory_context.count('- [')
         
         return messages, stats
     
     # ==================== 恢复功能 ====================
     
     def restore_from_archive(self, archive_id: str) -> Optional[List[Dict]]:
-        """
-        从归档恢复对话历史
-        
-        Args:
-            archive_id: 归档ID
-            
-        Returns:
-            恢复的消息列表，失败返回 None
-        """
+        """从归档恢复对话历史"""
         return conversation_journal.get_archive_messages(archive_id)
     
     def list_archives(self, session_id: str, limit: int = 10) -> List[Dict]:
-        """
-        列出归档记录
-        
-        Args:
-            session_id: 会话ID
-            limit: 最大返回数量
-            
-        Returns:
-            归档记录列表
-        """
+        """列出归档记录"""
         return conversation_journal.list_archives(session_id)[:limit]
     
     # ==================== 工具方法 ====================
     
     def _message_to_dict(self, msg: Any) -> Dict:
-        """
-        将 LangChain 消息转换为字典
-        
-        Args:
-            msg: LangChain 消息对象
-            
-        Returns:
-            消息字典
-        """
+        """将 LangChain 消息转换为字典"""
         if isinstance(msg, HumanMessage):
             return {"role": "user", "content": str(msg.content)}
         elif isinstance(msg, AIMessage):
@@ -568,15 +493,7 @@ class ContextCompactor:
             return {"role": "unknown", "content": str(msg.content) if hasattr(msg, 'content') else str(msg)}
     
     def _dict_to_messages(self, message_dicts: List[Dict]) -> List:
-        """
-        将字典列表转换为 LangChain 消息列表
-        
-        Args:
-            message_dicts: 消息字典列表
-            
-        Returns:
-            LangChain 消息列表
-        """
+        """将字典列表转换为 LangChain 消息列表"""
         messages = []
         for msg_dict in message_dicts:
             role = msg_dict.get('role')
@@ -594,12 +511,7 @@ class ContextCompactor:
         return messages
     
     def clear_session(self, session_id: str):
-        """
-        清理会话资源
-        
-        Args:
-            session_id: 会话ID
-        """
+        """清理会话资源"""
         conversation_journal.cleanup_session(session_id)
 
 
@@ -611,28 +523,12 @@ context_compactor = ContextCompactor()
 # ==================== 便捷函数 ====================
 
 def micro_compact(messages: List) -> List:
-    """
-    微观压缩便捷函数
-    
-    Args:
-        messages: 消息列表
-        
-    Returns:
-        压缩后的消息列表
-    """
+    """微观压缩便捷函数"""
     return context_compactor.micro_compact(messages)
 
 
 def should_auto_compact(session_id: str) -> bool:
-    """
-    判断是否需要自动压缩
-    
-    Args:
-        session_id: 会话ID
-        
-    Returns:
-        是否需要压缩
-    """
+    """判断是否需要自动压缩"""
     return context_compactor.should_auto_compact(session_id)
 
 
@@ -641,17 +537,7 @@ def auto_compact(
     llm_client: Any = None,
     current_query: str = ""
 ) -> Tuple[List[Dict], Optional[str]]:
-    """
-    自动压缩便捷函数
-    
-    Args:
-        session_id: 会话ID
-        llm_client: LLM 客户端
-        current_query: 当前查询
-        
-    Returns:
-        (压缩后的消息列表, 归档ID)
-    """
+    """自动压缩便捷函数"""
     return context_compactor.auto_compact(session_id, llm_client, current_query)
 
 
@@ -659,16 +545,7 @@ def manual_compact(
     session_id: str,
     llm_client: Any = None
 ) -> Dict[str, Any]:
-    """
-    手动压缩便捷函数
-    
-    Args:
-        session_id: 会话ID
-        llm_client: LLM 客户端
-        
-    Returns:
-        压缩结果
-    """
+    """手动压缩便捷函数"""
     return context_compactor.manual_compact(session_id, llm_client)
 
 
@@ -683,5 +560,6 @@ __all__ = [
     'KEEP_RECENT_TOOL_RESULTS',
     'KEEP_RECENT_MESSAGES',
     'ENABLE_LONG_TERM_MEMORY',
-    'MEMORY_TOKEN_BUDGET'
+    'MEMORY_TOKEN_BUDGET',
+    'MEMORY_RELEVANCE_THRESHOLD'
 ]

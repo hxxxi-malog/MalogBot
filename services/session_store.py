@@ -222,8 +222,8 @@ class SessionStore:
             if sess:
                 sess.updated_at = now
         
-        # 2. 写入JSONL文件（通过conversation_journal）
-        self.conversation_journal.append_message(
+        # 2. 写入JSONL文件（通过context_compactor）
+        self.context_compactor.append_message(
             session_id=session_id,
             role=role,
             content=content,

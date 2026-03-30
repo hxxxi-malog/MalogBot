@@ -43,6 +43,7 @@ from agent.tools.sub_agent import (
     clear_session_tools
 )
 from agent.tools.skills import SKILLS_TOOLS
+from agent.tools.memory import MEMORY_TOOLS  # 记忆存储工具
 from mcp.adapters import get_web_search_tool
 from services.context_compactor import context_compactor
 from services.session_store import session_store
@@ -74,7 +75,8 @@ class ChatService:
             get_todo_status,
             *TASK_MANAGER_TOOLS,  # 任务编排工具：task_create, task_update, task_get_ready 等
             spawn_sub_agent,  # 主agent可以创建子agent
-            *SKILLS_TOOLS  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
+            *SKILLS_TOOLS,  # 技能工具：list_skills, get_skill, get_skill_reference, get_skill_template
+            *MEMORY_TOOLS  # 记忆存储工具：store_memory, store_memories_batch
         ]
         
         # 子agent可用的工具（不包含 spawn_sub_agent，防止无限递归）
@@ -85,7 +87,8 @@ class ChatService:
             todo_manager,
             get_todo_status,
             *TASK_MANAGER_TOOLS,  # 子agent也可以使用任务编排
-            *SKILLS_TOOLS  # 子agent也可以使用技能工具
+            *SKILLS_TOOLS,  # 子agent也可以使用技能工具
+            *MEMORY_TOOLS  # 子agent也可以存储记忆
         ]
         
         # 创建支持工具调用的Agent（使用基础工具）
@@ -1184,8 +1187,8 @@ class ChatService:
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
             elif role == "system":
-                # 系统消息已经处理过了，跳过
-                pass
+                # 系统消息包含长期记忆上下文等，需要保留
+                messages.append(SystemMessage(content=content))
             # 注意：不再处理 tool 角色，因为它需要前置的 tool_calls
 
         # 如果有任务提醒，作为系统消息注入

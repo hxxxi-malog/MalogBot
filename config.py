@@ -114,6 +114,9 @@ class Config:
     # 长期记忆注入的token预算
     MEMORY_TOKEN_BUDGET = int(os.getenv('MEMORY_TOKEN_BUDGET', '2000'))
     
+    # 记忆相关性阈值（Rerank分数，只注入高于此阈值的记忆）
+    MEMORY_RELEVANCE_THRESHOLD = float(os.getenv('MEMORY_RELEVANCE_THRESHOLD', '0.65'))
+    
     # 第三层：Summary - 当前上下文
     
     # 微观压缩：保留最近的 N 个 tool_result
