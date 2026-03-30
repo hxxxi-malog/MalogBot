@@ -624,12 +624,35 @@ def remove_task_manager(session_id: str) -> None:
 from agent.tools.todo_manager import get_current_session
 
 
+def _get_session_id(config: dict = None) -> str:
+    """
+    从 config 或 contextvars 获取 session_id
+    
+    Args:
+        config: 工具调用时传入的配置
+        
+    Returns:
+        session_id
+    """
+    # 从 config 中获取 session_id
+    session_id = None
+    if config:
+        session_id = config.get("configurable", {}).get("session_id")
+    
+    # 如果 config 中没有，尝试从 contextvars 获取
+    if not session_id:
+        session_id = get_current_session()
+    
+    return session_id
+
+
 @tool
 def task_create(
     subject: str,
     description: str = "",
     blocked_by: Optional[List[int]] = None,
-    context: str = ""
+    context: str = "",
+    config: dict = None
 ) -> str:
     """
     创建支持依赖关系的任务。详细用法: get_tool_usage('task_management')
@@ -643,7 +666,7 @@ def task_create(
     Returns:
         创建的任务JSON
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.create(subject, description, blocked_by, context)
 
@@ -654,7 +677,8 @@ def task_update(
     status: Optional[str] = None,
     add_blocked_by: Optional[int] = None,
     add_blocks: Optional[int] = None,
-    note: Optional[str] = None
+    note: Optional[str] = None,
+    config: dict = None
 ) -> str:
     """
     更新任务状态。详细用法: get_tool_usage('task_management')
@@ -669,13 +693,13 @@ def task_update(
     Returns:
         更新后的任务JSON
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.update(task_id, status, add_blocked_by, add_blocks, note=note)
 
 
 @tool
-def task_get(task_id: int) -> str:
+def task_get(task_id: int, config: dict = None) -> str:
     """
     获取任务详情。
     
@@ -685,78 +709,78 @@ def task_get(task_id: int) -> str:
     Returns:
         任务详情JSON
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.get(task_id)
 
 
 @tool
-def task_get_ready() -> str:
+def task_get_ready(config: dict = None) -> str:
     """
     获取可立即执行的任务(pending且无阻塞)。
     
     Returns:
         可执行任务列表
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.get_ready_tasks()
 
 
 @tool
-def task_get_blocked() -> str:
+def task_get_blocked(config: dict = None) -> str:
     """
     获取被阻塞的任务。
     
     Returns:
         被阻塞任务列表
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.get_blocked_tasks()
 
 
 @tool
-def task_get_status() -> str:
+def task_get_status(config: dict = None) -> str:
     """
     获取任务图整体状态。
     
     Returns:
         任务图状态摘要
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.get_status()
 
 
 @tool
-def task_visualize() -> str:
+def task_visualize(config: dict = None) -> str:
     """
     可视化任务图。
     
     Returns:
         任务图可视化
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.visualize()
 
 
 @tool
-def task_list() -> str:
+def task_list(config: dict = None) -> str:
     """
     列出所有任务。
     
     Returns:
         所有任务列表
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.list_all()
 
 
 @tool
-def task_delete(task_id: int) -> str:
+def task_delete(task_id: int, config: dict = None) -> str:
     """
     删除一个任务。
     
@@ -768,13 +792,13 @@ def task_delete(task_id: int) -> str:
     Returns:
         操作结果
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.delete(task_id)
 
 
 @tool
-def task_clear() -> str:
+def task_clear(config: dict = None) -> str:
     """
     清空所有任务。
     
@@ -783,7 +807,7 @@ def task_clear() -> str:
     Returns:
         操作结果
     """
-    session_id = get_current_session()
+    session_id = _get_session_id(config)
     manager = get_task_manager(session_id)
     return manager.clear_all()
 

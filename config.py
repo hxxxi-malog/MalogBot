@@ -97,12 +97,27 @@ class Config:
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', './uploads')
     MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '10485760'))  # 10MB
 
-    # ==================== 上下文压缩配置 ====================
+    # ==================== 上下文压缩配置（三层架构） ====================
+    # 第一层：Journal（JSONL）- 原始消息存储
+    
+    # 模型最大上下文窗口（默认128k）
+    MAX_CONTEXT_TOKENS = int(os.getenv('MAX_CONTEXT_TOKENS', '128000'))
+    
+    # 压缩触发阈值比例（达到80%时触发）
+    COMPACT_THRESHOLD_RATIO = float(os.getenv('COMPACT_THRESHOLD_RATIO', '0.8'))
+    
+    # 第二层：Memory（向量）- 长期记忆
+    
+    # 是否启用长期记忆功能
+    ENABLE_LONG_TERM_MEMORY = os.getenv('ENABLE_LONG_TERM_MEMORY', 'true').lower() == 'true'
+    
+    # 长期记忆注入的token预算
+    MEMORY_TOKEN_BUDGET = int(os.getenv('MEMORY_TOKEN_BUDGET', '2000'))
+    
+    # 第三层：Summary - 当前上下文
+    
     # 微观压缩：保留最近的 N 个 tool_result
     KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '5'))
-    
-    # 自动压缩：Token 阈值（字符数近似）
-    AUTO_COMPACT_THRESHOLD = int(os.getenv('AUTO_COMPACT_THRESHOLD', '50000'))
     
     # 压缩后保留的最近消息数
     KEEP_RECENT_MESSAGES = int(os.getenv('KEEP_RECENT_MESSAGES', '10'))

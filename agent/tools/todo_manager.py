@@ -303,24 +303,24 @@ def remove_todo_manager(session_id: str) -> None:
 # ==================== LangChain 工具定义 ====================
 
 # 用于在工具调用时传递 session_id 的上下文变量
-# 由于 LangChain 工具不支持额外的上下文参数，我们使用 thread-local 存储
-import threading
+# 使用 contextvars 替代 threading.local，支持线程池和异步环境
+import contextvars
 
-_current_session_id = threading.local()
+_current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar('session_id', default='default')
 
 
 def set_current_session(session_id: str) -> None:
     """设置当前会话ID（在工具调用前设置）"""
-    _current_session_id.value = session_id
+    _current_session_id.set(session_id)
 
 
 def get_current_session() -> str:
     """获取当前会话ID"""
-    return getattr(_current_session_id, 'value', 'default')
+    return _current_session_id.get()
 
 
 @tool
-def todo_manager(items: List[Dict[str, Any]]) -> str:
+def todo_manager(items: List[Dict[str, Any]], config: dict = None) -> str:
     """
     管理任务列表，用于跟踪复杂任务的进度。
     
@@ -338,8 +338,16 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
     Returns:
         格式化的任务列表字符串
     """
-    try:
+    # 从 config 中获取 session_id
+    session_id = None
+    if config:
+        session_id = config.get("configurable", {}).get("session_id")
+    
+    # 如果 config 中没有，尝试从 contextvars 获取
+    if not session_id:
         session_id = get_current_session()
+    
+    try:
         manager = get_todo_manager(session_id)
         return manager.update(items)
     except ValueError as e:
@@ -349,14 +357,22 @@ def todo_manager(items: List[Dict[str, Any]]) -> str:
 
 
 @tool
-def get_todo_status() -> str:
+def get_todo_status(config: dict = None) -> str:
     """
     获取当前任务状态摘要，包括所有任务及其进度统计。
     
     Returns:
         任务状态摘要字符串
     """
-    session_id = get_current_session()
+    # 从 config 中获取 session_id
+    session_id = None
+    if config:
+        session_id = config.get("configurable", {}).get("session_id")
+    
+    # 如果 config 中没有，尝试从 contextvars 获取
+    if not session_id:
+        session_id = get_current_session()
+    
     manager = get_todo_manager(session_id)
     
     status = manager.get_status()

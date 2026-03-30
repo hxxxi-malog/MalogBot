@@ -44,7 +44,7 @@ from agent.tools.sub_agent import (
 )
 from agent.tools.skills import SKILLS_TOOLS
 from mcp.adapters import get_web_search_tool
-from services.context_manager import context_manager
+from services.context_compactor import context_compactor
 from services.session_store import session_store
 from services.rag_service import rag_service
 from config import Config
@@ -243,17 +243,18 @@ class ChatService:
             - operation: 操作类型
             - working_dir: 执行路径
         """
-        # 获取会话历史
-        chat_history = self._get_chat_history(session_id)
+        # 获取会话历史（使用新的三层数据注入）
+        chat_history, context_stats = session_store.get_full_context(session_id, user_input)
         
         # 检查是否需要压缩上下文
-        if context_manager.should_compress(chat_history):
-            chat_history = context_manager.compress_history(
-                chat_history, 
-                llm_client=self.llm
+        if context_stats.get('should_compact', False):
+            chat_history, _ = context_compactor.auto_compact(
+                session_id=session_id,
+                llm_client=self.llm,
+                current_query=user_input
             )
-            # 数据库模式下，压缩后需要更新数据库
-            self._compress_history_in_db(session_id, chat_history)
+            # 更新数据库
+            session_store.replace_messages(session_id, chat_history)
 
         try:
             # 设置当前会话ID（供工具使用）
@@ -364,17 +365,18 @@ class ChatService:
         # 清除之前的取消标志
         self.clear_cancel_flag(session_id)
         
-        # 获取会话历史
-        chat_history = self._get_chat_history(session_id)
+        # 获取会话历史（使用新的三层数据注入）
+        chat_history, context_stats = session_store.get_full_context(session_id, user_input)
         
         # 检查是否需要压缩上下文
-        if context_manager.should_compress(chat_history):
-            chat_history = context_manager.compress_history(
-                chat_history, 
-                llm_client=self.llm
+        if context_stats.get('should_compact', False):
+            chat_history, _ = context_compactor.auto_compact(
+                session_id=session_id,
+                llm_client=self.llm,
+                current_query=user_input
             )
-            # 数据库模式下，压缩后需要更新数据库
-            self._compress_history_in_db(session_id, chat_history)
+            # 更新数据库
+            session_store.replace_messages(session_id, chat_history)
 
         try:
             # 设置当前会话ID（供工具使用）
@@ -1131,16 +1133,6 @@ class ChatService:
             content: 消息内容
         """
         session_store.add_message(session_id, role, content)
-
-    def _compress_history_in_db(self, session_id: str, compressed_history: List[Dict]):
-        """
-        在数据库中压缩历史记录
-        
-        Args:
-            session_id: 会话ID
-            compressed_history: 压缩后的历史记录
-        """
-        session_store.replace_messages(session_id, compressed_history)
 
     def _build_messages(
             self,
