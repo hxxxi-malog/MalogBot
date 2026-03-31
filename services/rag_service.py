@@ -1,7 +1,10 @@
 """
 RAG检索服务
 
-提供向量检索和重排序功能
+提供混合检索功能：
+1. 向量检索（语义相似度）
+2. BM25检索（关键词匹配）
+3. 加权重排序融合
 """
 import logging
 from typing import List, Dict, Any, Optional
@@ -13,18 +16,28 @@ import numpy as np
 from config import Config
 from services.db_manager import db_manager
 from services.embedding_service import embedding_service
+from services.bm25_service import bm25_service
 from models.knowledge_base import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    """RAG检索服务"""
+    """RAG检索服务 - 支持混合检索"""
 
     def __init__(self):
         """初始化服务"""
         self.top_n = Config.RAG_TOP_N  # 初始检索数量
         self.top_k = Config.RAG_TOP_K  # 重排序后返回的数量
+        
+        # 混合检索配置
+        self.enable_hybrid = getattr(Config, 'ENABLE_HYBRID_SEARCH', True)
+        self.bm25_weight = getattr(Config, 'BM25_WEIGHT', 0.3)
+        self.vector_weight = getattr(Config, 'VECTOR_WEIGHT', 0.7)
+        
+        logger.info(f"[RAG Service] 混合检索: {'启用' if self.enable_hybrid else '禁用'}")
+        if self.enable_hybrid:
+            logger.info(f"[RAG Service] 权重配置 - 向量: {self.vector_weight}, BM25: {self.bm25_weight}")
 
     async def search(
         self,
@@ -36,11 +49,12 @@ class RAGService:
         """
         在知识库中检索相关内容
 
-        流程：
-        1. 将查询向量化
-        2. 向量检索获取 top_n 个结果
-        3. 使用重排序模型对结果进行重排序
-        4. 返回 top_k 个最相关的结果
+        混合检索流程：
+        1. 并行执行向量检索和BM25检索
+        2. 对结果进行分数归一化
+        3. 加权融合分数
+        4. 使用重排序模型对候选结果重排
+        5. 返回 top_k 个最相关的结果
 
         Args:
             query: 查询文本
@@ -56,6 +70,106 @@ class RAGService:
         top_n = top_n or self.top_n
         top_k = top_k or self.top_k
 
+        # 判断是否启用混合检索
+        if self.enable_hybrid:
+            return await self._hybrid_search(query, knowledge_base_id, top_n, top_k)
+        else:
+            return await self._vector_only_search(query, knowledge_base_id, top_n, top_k)
+
+    async def _hybrid_search(
+        self,
+        query: str,
+        knowledge_base_id: str,
+        top_n: int,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        混合检索：向量 + BM25
+        
+        Args:
+            query: 查询文本
+            knowledge_base_id: 知识库ID
+            top_n: 初始检索数量
+            top_k: 重排序后返回数量
+            
+        Returns:
+            检索结果列表
+        """
+        # 1. 并行获取查询向量和BM25检索
+        query_embedding_task = asyncio.create_task(
+            embedding_service.get_single_embedding(query)
+        )
+        bm25_search_task = asyncio.create_task(
+            asyncio.to_thread(bm25_service.search, query, knowledge_base_id, top_n * 2)
+        )
+        
+        # 等待结果
+        query_embedding, bm25_results = await asyncio.gather(
+            query_embedding_task, bm25_search_task
+        )
+        
+        if not query_embedding:
+            logger.error("[RAG Service] 无法获取查询向量")
+            return []
+        
+        logger.info(f"[RAG Service] 获取向量成功, 维度: {len(query_embedding)}")
+
+        # 2. 向量检索
+        vector_results = await self._vector_search(query_embedding, knowledge_base_id, top_n * 2)
+        logger.info(f"[RAG Service] 向量检索找到 {len(vector_results)} 个结果")
+        
+        # 3. BM25检索结果（已获取）
+        logger.info(f"[RAG Service] BM25检索找到 {len(bm25_results)} 个结果")
+
+        # 4. 分数归一化和加权融合
+        merged_results = self._merge_and_rank(vector_results, bm25_results)
+        logger.info(f"[RAG Service] 合并后有 {len(merged_results)} 个候选结果")
+
+        if not merged_results:
+            return []
+
+        # 5. 重排序
+        # 取合并后的前 top_n * 2 个候选进行重排
+        candidates = merged_results[:top_n * 2]
+        documents = [item['content'] for item in candidates]
+        reranked = await embedding_service.rerank(query, documents, top_k)
+        
+        logger.info(f"[RAG Service] 重排序完成, 返回 {len(reranked)} 个结果")
+
+        # 6. 组合结果
+        results = []
+        for item in reranked:
+            idx = item['index']
+            if idx < len(candidates):
+                result = candidates[idx].copy()
+                result['score'] = item['relevance_score']
+                # 保留原始分数信息
+                result['vector_score'] = candidates[idx].get('vector_score', 0)
+                result['bm25_score'] = candidates[idx].get('bm25_score', 0)
+                result['hybrid_score'] = candidates[idx].get('hybrid_score', 0)
+                results.append(result)
+
+        return results
+
+    async def _vector_only_search(
+        self,
+        query: str,
+        knowledge_base_id: str,
+        top_n: int,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        仅向量检索（原有逻辑）
+        
+        Args:
+            query: 查询文本
+            knowledge_base_id: 知识库ID
+            top_n: 初始检索数量
+            top_k: 重排序后返回数量
+            
+        Returns:
+            检索结果列表
+        """
         # 1. 获取查询向量
         query_embedding = await embedding_service.get_single_embedding(query)
         if not query_embedding:
@@ -88,6 +202,91 @@ class RAGService:
                 results.append(result)
 
         return results
+
+    def _merge_and_rank(
+        self,
+        vector_results: List[Dict[str, Any]],
+        bm25_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        合并向量检索和BM25检索结果，并进行加权排序
+        
+        Args:
+            vector_results: 向量检索结果
+            bm25_results: BM25检索结果
+            
+        Returns:
+            合并后的结果列表
+        """
+        # 分数归一化
+        vector_scores = self._normalize_scores([r.get('score', 0) for r in vector_results])
+        bm25_scores = self._normalize_scores([r.get('score', 0) for r in bm25_results])
+        
+        # 更新归一化后的分数
+        for i, result in enumerate(vector_results):
+            result['vector_score'] = vector_scores[i]
+            result['bm25_score'] = 0.0
+        
+        for i, result in enumerate(bm25_results):
+            result['bm25_score'] = bm25_scores[i]
+            if 'vector_score' not in result:
+                result['vector_score'] = 0.0
+        
+        # 按ID合并结果
+        merged = {}
+        
+        # 添加向量检索结果
+        for result in vector_results:
+            chunk_id = result['id']
+            merged[chunk_id] = result.copy()
+        
+        # 合并BM25结果
+        for result in bm25_results:
+            chunk_id = result['id']
+            if chunk_id in merged:
+                # 已存在，更新分数
+                merged[chunk_id]['bm25_score'] = result['bm25_score']
+            else:
+                # 新结果
+                merged[chunk_id] = result.copy()
+        
+        # 计算混合分数
+        for chunk_id, result in merged.items():
+            result['hybrid_score'] = (
+                self.vector_weight * result['vector_score'] +
+                self.bm25_weight * result['bm25_score']
+            )
+        
+        # 按混合分数排序
+        sorted_results = sorted(
+            merged.values(),
+            key=lambda x: x['hybrid_score'],
+            reverse=True
+        )
+        
+        return sorted_results
+
+    def _normalize_scores(self, scores: List[float]) -> List[float]:
+        """
+        分数归一化（Min-Max归一化）
+        
+        Args:
+            scores: 原始分数列表
+            
+        Returns:
+            归一化后的分数列表（0-1范围）
+        """
+        if not scores:
+            return []
+        
+        min_score = min(scores)
+        max_score = max(scores)
+        
+        if max_score == min_score:
+            # 所有分数相同
+            return [0.5] * len(scores)
+        
+        return [(s - min_score) / (max_score - min_score) for s in scores]
 
     async def _vector_search(
         self,

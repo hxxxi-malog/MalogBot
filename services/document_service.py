@@ -17,6 +17,7 @@ from sqlalchemy import text as sql_text
 from config import Config
 from services.db_manager import db_manager
 from services.embedding_service import embedding_service
+from services.tokenizer_service import tokenizer_service
 from models.knowledge_base import KnowledgeBase, Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ class DocumentService:
         knowledge_base_id: str
     ) -> Optional[Dict[str, Any]]:
         """
-        处理文档：提取文本、分块、向量化、存储
+        处理文档：提取文本、分块、向量化、分词、存储
 
         Args:
             file_path: 文件路径
@@ -177,6 +178,11 @@ class DocumentService:
                 'error': '向量化失败'
             }
 
+        # 批量分词（用于BM25检索）
+        logger.info(f"[Document Service] 开始分词处理，共 {len(chunks)} 个分块")
+        tokens_list = tokenizer_service.tokenize_batch(chunks)
+        logger.info(f"[Document Service] 分词完成")
+
         # 第二阶段：数据库操作（短事务）
         document_id = uuid.uuid4()
         
@@ -198,9 +204,10 @@ class DocumentService:
                 session.flush()  # 获取 document.id
 
                 # 保存分块（使用原生 SQL 以支持 vector 类型）
-                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                for i, (chunk, embedding, tokens) in enumerate(zip(chunks, embeddings, tokens_list)):
                     chunk_id = str(uuid.uuid4())
                     embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                    tokens_json = json.dumps(tokens, ensure_ascii=False)
                     metadata_json = json.dumps({
                         'filename': filename,
                         'chunk_index': i,
@@ -211,8 +218,8 @@ class DocumentService:
                     # 注意：embedding_str 是我们控制的数值数组字符串，不存在注入风险
                     insert_sql = f"""
                         INSERT INTO document_chunks 
-                        (id, document_id, knowledge_base_id, chunk_index, content, embedding, chunk_metadata, created_at)
-                        VALUES (:id, :doc_id, :kb_id, :idx, :content, '{embedding_str}'::vector, :metadata, NOW())
+                        (id, document_id, knowledge_base_id, chunk_index, content, tokens, embedding, chunk_metadata, created_at)
+                        VALUES (:id, :doc_id, :kb_id, :idx, :content, :tokens, '{embedding_str}'::vector, :metadata, NOW())
                     """
                     session.execute(sql_text(insert_sql), {
                         'id': chunk_id,
@@ -220,6 +227,7 @@ class DocumentService:
                         'kb_id': knowledge_base_id,
                         'idx': i,
                         'content': chunk,
+                        'tokens': tokens_json,
                         'metadata': metadata_json
                     })
 

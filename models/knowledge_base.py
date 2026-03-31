@@ -106,6 +106,7 @@ class DocumentChunk(Base):
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey('knowledge_bases.id', ondelete='CASCADE'), nullable=False)
     chunk_index = Column(Integer, nullable=False)  # 分块在文档中的索引
     content = Column(Text, nullable=False)  # 分块内容
+    tokens = Column(Text, nullable=True)  # 分词结果（JSON格式的token列表，用于BM25检索）
     chunk_metadata = Column(Text, nullable=True)  # JSON 格式的元数据（使用 chunk_metadata 避免与 SQLAlchemy 的 metadata 冲突）
     created_at = Column(DateTime, default=func.now(), nullable=False)
     
