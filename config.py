@@ -98,6 +98,10 @@ class Config:
     BM25_WEIGHT = float(os.getenv('BM25_WEIGHT', '0.3'))  # BM25检索权重
     VECTOR_WEIGHT = float(os.getenv('VECTOR_WEIGHT', '0.7'))  # 向量检索权重
 
+    # MMR多样性重排序配置
+    ENABLE_MMR = os.getenv('ENABLE_MMR', 'true').lower() == 'true'  # 是否启用MMR多样性重排序
+    MMR_ALPHA = float(os.getenv('MMR_ALPHA', '0.7'))  # MMR相关性权重（越大越偏向相关性，越小越偏向多样性）
+
     # 文件上传配置
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', './uploads')
     MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '10485760'))  # 10MB

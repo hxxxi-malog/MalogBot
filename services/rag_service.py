@@ -5,6 +5,7 @@ RAG检索服务
 1. 向量检索（语义相似度）
 2. BM25检索（关键词匹配）
 3. 加权重排序融合
+4. MMR多样性重排序
 """
 import logging
 from typing import List, Dict, Any, Optional
@@ -17,13 +18,14 @@ from config import Config
 from services.db_manager import db_manager
 from services.embedding_service import embedding_service
 from services.bm25_service import bm25_service
+from services.mmr_reranker import mmr_reranker
 from models.knowledge_base import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    """RAG检索服务 - 支持混合检索"""
+    """RAG检索服务 - 支持混合检索和MMR多样性重排序"""
 
     def __init__(self):
         """初始化服务"""
@@ -35,16 +37,24 @@ class RAGService:
         self.bm25_weight = getattr(Config, 'BM25_WEIGHT', 0.3)
         self.vector_weight = getattr(Config, 'VECTOR_WEIGHT', 0.7)
         
+        # MMR配置
+        self.enable_mmr = getattr(Config, 'ENABLE_MMR', True)
+        self.mmr_alpha = getattr(Config, 'MMR_ALPHA', 0.7)
+        
         logger.info(f"[RAG Service] 混合检索: {'启用' if self.enable_hybrid else '禁用'}")
         if self.enable_hybrid:
             logger.info(f"[RAG Service] 权重配置 - 向量: {self.vector_weight}, BM25: {self.bm25_weight}")
+        logger.info(f"[RAG Service] MMR多样性: {'启用' if self.enable_mmr else '禁用'}")
+        if self.enable_mmr:
+            logger.info(f"[RAG Service] MMR alpha: {self.mmr_alpha} (相关性权重)")
 
     async def search(
         self,
         query: str,
         knowledge_base_id: str,
         top_n: int = None,
-        top_k: int = None
+        top_k: int = None,
+        use_mmr: bool = None
     ) -> List[Dict[str, Any]]:
         """
         在知识库中检索相关内容
@@ -54,13 +64,15 @@ class RAGService:
         2. 对结果进行分数归一化
         3. 加权融合分数
         4. 使用重排序模型对候选结果重排
-        5. 返回 top_k 个最相关的结果
+        5. MMR多样性重排序（可选）
+        6. 返回 top_k 个最相关的结果
 
         Args:
             query: 查询文本
             knowledge_base_id: 知识库ID
             top_n: 初始检索数量
             top_k: 重排序后返回的数量
+            use_mmr: 是否使用MMR重排序（默认使用配置）
 
         Returns:
             检索结果列表，每个包含 content, score, metadata 等
@@ -69,28 +81,34 @@ class RAGService:
         
         top_n = top_n or self.top_n
         top_k = top_k or self.top_k
+        
+        # 判断是否使用MMR
+        if use_mmr is None:
+            use_mmr = self.enable_mmr
 
         # 判断是否启用混合检索
         if self.enable_hybrid:
-            return await self._hybrid_search(query, knowledge_base_id, top_n, top_k)
+            return await self._hybrid_search(query, knowledge_base_id, top_n, top_k, use_mmr)
         else:
-            return await self._vector_only_search(query, knowledge_base_id, top_n, top_k)
+            return await self._vector_only_search(query, knowledge_base_id, top_n, top_k, use_mmr)
 
     async def _hybrid_search(
         self,
         query: str,
         knowledge_base_id: str,
         top_n: int,
-        top_k: int
+        top_k: int,
+        use_mmr: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        混合检索：向量 + BM25
+        混合检索：向量 + BM25 + MMR重排序
         
         Args:
             query: 查询文本
             knowledge_base_id: 知识库ID
             top_n: 初始检索数量
             top_k: 重排序后返回数量
+            use_mmr: 是否使用MMR重排序
             
         Returns:
             检索结果列表
@@ -132,11 +150,11 @@ class RAGService:
         # 取合并后的前 top_n * 2 个候选进行重排
         candidates = merged_results[:top_n * 2]
         documents = [item['content'] for item in candidates]
-        reranked = await embedding_service.rerank(query, documents, top_k)
+        reranked = await embedding_service.rerank(query, documents, len(candidates))
         
-        logger.info(f"[RAG Service] 重排序完成, 返回 {len(reranked)} 个结果")
+        logger.info(f"[RAG Service] 重排序完成, 获得 {len(reranked)} 个结果")
 
-        # 6. 组合结果
+        # 6. 组合结果（保留相关性分数）
         results = []
         for item in reranked:
             idx = item['index']
@@ -149,6 +167,26 @@ class RAGService:
                 result['hybrid_score'] = candidates[idx].get('hybrid_score', 0)
                 results.append(result)
 
+        # 7. MMR多样性重排序
+        if use_mmr and len(results) > top_k:
+            # 获取向量嵌入用于MMR
+            results_with_embeddings = await self._add_embeddings_to_results(
+                results, knowledge_base_id
+            )
+            
+            # 使用MMR重排序
+            mmr_reranker.alpha = self.mmr_alpha
+            results = mmr_reranker.rerank(
+                results_with_embeddings,
+                relevance_key='score',
+                content_key='content',
+                embedding_key='embedding',
+                top_k=top_k
+            )
+            logger.info(f"[RAG Service] MMR重排序完成, 返回 {len(results)} 个多样化结果")
+        else:
+            results = results[:top_k]
+
         return results
 
     async def _vector_only_search(
@@ -156,16 +194,18 @@ class RAGService:
         query: str,
         knowledge_base_id: str,
         top_n: int,
-        top_k: int
+        top_k: int,
+        use_mmr: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        仅向量检索（原有逻辑）
+        仅向量检索（原有逻辑） + MMR重排序
         
         Args:
             query: 查询文本
             knowledge_base_id: 知识库ID
             top_n: 初始检索数量
             top_k: 重排序后返回数量
+            use_mmr: 是否使用MMR重排序
             
         Returns:
             检索结果列表
@@ -179,7 +219,7 @@ class RAGService:
         logger.info(f"[RAG Service] 获取向量成功, 维度: {len(query_embedding)}")
 
         # 2. 向量检索
-        chunks = await self._vector_search(query_embedding, knowledge_base_id, top_n)
+        chunks = await self._vector_search(query_embedding, knowledge_base_id, top_n * 2)
         if not chunks:
             logger.warning(f"[RAG Service] 未找到相关内容, kb={knowledge_base_id}")
             return []
@@ -188,9 +228,9 @@ class RAGService:
 
         # 3. 重排序
         documents = [chunk['content'] for chunk in chunks]
-        reranked = await embedding_service.rerank(query, documents, top_k)
+        reranked = await embedding_service.rerank(query, documents, len(chunks))
         
-        logger.info(f"[RAG Service] 重排序完成, 返回 {len(reranked)} 个结果")
+        logger.info(f"[RAG Service] 重排序完成, 获得 {len(reranked)} 个结果")
 
         # 4. 组合结果
         results = []
@@ -201,6 +241,74 @@ class RAGService:
                 result['score'] = item['relevance_score']
                 results.append(result)
 
+        # 5. MMR多样性重排序
+        if use_mmr and len(results) > top_k:
+            # 获取向量嵌入用于MMR
+            results_with_embeddings = await self._add_embeddings_to_results(
+                results, knowledge_base_id
+            )
+            
+            mmr_reranker.alpha = self.mmr_alpha
+            results = mmr_reranker.rerank(
+                results_with_embeddings,
+                relevance_key='score',
+                content_key='content',
+                embedding_key='embedding',
+                top_k=top_k
+            )
+            logger.info(f"[RAG Service] MMR重排序完成, 返回 {len(results)} 个多样化结果")
+        else:
+            results = results[:top_k]
+
+        return results
+
+    async def _add_embeddings_to_results(
+        self,
+        results: List[Dict[str, Any]],
+        knowledge_base_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        为检索结果添加向量嵌入（用于MMR计算）
+        
+        Args:
+            results: 检索结果列表
+            knowledge_base_id: 知识库ID
+            
+        Returns:
+            包含嵌入的检索结果列表
+        """
+        if not results:
+            return results
+        
+        try:
+            chunk_ids = [r['id'] for r in results]
+            
+            with db_manager.engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT id, embedding
+                    FROM document_chunks
+                    WHERE id = ANY(:ids)
+                    AND embedding IS NOT NULL
+                """), {'ids': chunk_ids})
+                
+                # 构建ID到嵌入的映射
+                embedding_map = {}
+                for row in result.fetchall():
+                    chunk_id = str(row[0])
+                    embedding = row[1]
+                    if embedding is not None:
+                        if hasattr(embedding, '__iter__') and not isinstance(embedding, str):
+                            embedding_map[chunk_id] = list(embedding)
+                        else:
+                            embedding_map[chunk_id] = embedding
+                
+                # 添加嵌入到结果
+                for r in results:
+                    r['embedding'] = embedding_map.get(r['id'])
+                    
+        except Exception as e:
+            logger.error(f"[RAG Service] 获取嵌入失败: {str(e)}")
+        
         return results
 
     def _merge_and_rank(

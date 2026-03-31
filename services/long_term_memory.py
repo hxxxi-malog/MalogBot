@@ -5,7 +5,8 @@
 1. Agent 主动存储重要信息（通过工具调用）
 2. 向量化存储，支持语义检索
 3. 使用 Rerank 模型对检索结果进行相关性打分
-4. 只返回相关性高于阈值的信息
+4. MMR多样性重排序，避免重复内容
+5. 只返回相关性高于阈值的信息
 """
 import json
 import logging
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from services.db_manager import db_manager
 from services.embedding_service import embedding_service
+from services.mmr_reranker import mmr_reranker
 from models.database import LongTermMemory
 
 logger = logging.getLogger(__name__)
@@ -49,17 +51,20 @@ class LongTermMemoryService:
     1. 存储重要信息（Agent 主动调用工具存储）
     2. 向量化存储，支持语义检索
     3. 使用 Rerank 模型对检索结果打分
+    4. MMR多样性重排序，避免重复内容
     
     设计原则：
     - Agent 决定什么信息重要
     - Rerank 决定检索结果的相关性
+    - MMR保证结果多样性
     - 只返回高相关性的记忆
     """
     
     def __init__(
         self, 
         embedding_dimension: int = 1024,
-        relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
+        relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
+        mmr_alpha: float = 0.7
     ):
         """
         初始化长期记忆服务
@@ -67,9 +72,11 @@ class LongTermMemoryService:
         Args:
             embedding_dimension: 向量维度
             relevance_threshold: 相关性阈值（Rerank 分数）
+            mmr_alpha: MMR相关性权重（默认0.7）
         """
         self.embedding_dimension = embedding_dimension
         self.relevance_threshold = relevance_threshold
+        self.mmr_alpha = mmr_alpha
         self._pending_tasks: Dict[str, bool] = {}
         self._tasks_lock = threading.Lock()
     
@@ -195,7 +202,8 @@ class LongTermMemoryService:
         top_n: int = 10,
         relevance_threshold: float = None,
         memory_types: List[str] = None,
-        cross_session: bool = True  # 是否跨会话检索（默认跨会话）
+        cross_session: bool = True,  # 是否跨会话检索（默认跨会话）
+        use_mmr: bool = True  # 是否使用MMR多样性重排序
     ) -> List[Dict]:
         """
         使用向量检索 + Rerank 模型进行记忆检索
@@ -204,7 +212,8 @@ class LongTermMemoryService:
         1. 向量检索获取候选记忆
         2. 使用 Rerank 模型计算相关性分数
         3. 过滤掉相关性低于阈值的记忆
-        4. 返回高相关性记忆
+        4. MMR多样性重排序（可选）
+        5. 返回高相关性记忆
         
         Args:
             query: 查询文本
@@ -213,6 +222,7 @@ class LongTermMemoryService:
             relevance_threshold: 相关性阈值（默认使用实例阈值）
             memory_types: 限制记忆类型
             cross_session: 是否跨会话检索（默认 True，检索所有会话的记忆）
+            use_mmr: 是否使用MMR多样性重排序
             
         Returns:
             带相关性分数的记忆列表
@@ -244,7 +254,7 @@ class LongTermMemoryService:
                 if not cross_session and session_id:
                     query_obj = query_obj.filter_by(session_id=session_id)
                 
-                # 获取候选记忆
+                # 获取候选记忆（多取一些用于MMR筛选）
                 candidates = query_obj.order_by(
                     LongTermMemory.importance.desc()
                 ).limit(top_n * 3).all()
@@ -266,6 +276,7 @@ class LongTermMemoryService:
                             
                             valid_candidates.append({
                                 'memory': memory,
+                                'embedding': stored_embedding,
                                 'similarity': similarity
                             })
                         except:
@@ -282,7 +293,7 @@ class LongTermMemoryService:
                 documents = [c['memory'].content for c in top_candidates]
                 
                 rerank_results = loop.run_until_complete(
-                    embedding_service.rerank(query, documents, top_k=top_n)
+                    embedding_service.rerank(query, documents, top_k=len(documents))
                 )
                 
                 # 6. 合并 Rerank 分数并过滤
@@ -294,12 +305,27 @@ class LongTermMemoryService:
                     if relevance_score >= threshold:
                         mem_dict = top_candidates[idx]['memory'].to_dict()
                         mem_dict['relevance_score'] = relevance_score
+                        mem_dict['embedding'] = top_candidates[idx]['embedding']
                         results.append(mem_dict)
                 
                 logger.info(
                     f"[Memory] RAG检索: 候选 {len(candidates)} 条, "
                     f"Rerank后达标 {len(results)} 条 (阈值 {threshold})"
                 )
+                
+                # 7. MMR多样性重排序
+                if use_mmr and len(results) > top_n:
+                    mmr_reranker.alpha = self.mmr_alpha
+                    results = mmr_reranker.rerank(
+                        results,
+                        relevance_key='relevance_score',
+                        content_key='content',
+                        embedding_key='embedding',
+                        top_k=top_n
+                    )
+                    logger.info(f"[Memory] MMR重排序完成, 返回 {len(results)} 条多样化记忆")
+                else:
+                    results = results[:top_n]
                 
                 return results
                 
