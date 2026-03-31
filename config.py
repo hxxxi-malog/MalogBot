@@ -93,6 +93,11 @@ class Config:
     CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', '500'))  # 文本分块大小
     CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', '50'))  # 文本分块重叠大小
 
+    # 混合检索配置
+    ENABLE_HYBRID_SEARCH = os.getenv('ENABLE_HYBRID_SEARCH', 'true').lower() == 'true'  # 是否启用混合检索
+    BM25_WEIGHT = float(os.getenv('BM25_WEIGHT', '0.3'))  # BM25检索权重
+    VECTOR_WEIGHT = float(os.getenv('VECTOR_WEIGHT', '0.7'))  # 向量检索权重
+
     # 文件上传配置
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', './uploads')
     MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '10485760'))  # 10MB
