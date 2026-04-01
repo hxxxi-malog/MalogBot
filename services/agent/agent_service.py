@@ -19,7 +19,7 @@ from langgraph.errors import GraphRecursionError
 
 from config import Config
 from agent.llm import get_llm
-from agent.prompts import SYSTEM_PROMPT
+from agent.prompts import build_system_prompt, get_system_prompt
 from agent.tools.bash import execute_confirmed_bash
 from agent.tools.todo_manager import get_todo_manager, remove_todo_manager
 from agent.tools.task_manager import remove_task_manager
@@ -87,6 +87,11 @@ class AgentService:
         """
         构建LangChain消息列表
         
+        采用分层提示词构建策略：
+        1. 核心规则 + 工具索引（常驻）
+        2. 场景指南（按需加载）
+        3. 动态上下文（记忆、知识库、任务状态）
+        
         Args:
             chat_history: 对话历史
             user_input: 当前用户输入
@@ -98,18 +103,32 @@ class AgentService:
         """
         messages = []
         
-        # 构建系统提示
-        system_prompt = SYSTEM_PROMPT
+        # 获取当前会话可用的工具列表（用于工具感知）
+        available_tools = self._get_available_tool_names(session_id)
         
-        # 如果有选中的知识库，进行RAG检索并注入上下文
+        # 获取知识库上下文（如果启用）
+        knowledge_context = None
         if session_id:
             kb_id = self.session_store.get_knowledge_base_id(session_id)
             if kb_id:
-                # 传递对话历史用于指代消解
-                context = self._run_async_rag_search(user_input, kb_id, chat_history)
-                if context:
-                    knowledge_prompt = f"""\n\n## 知识库上下文\n\n以下是知识库中检索到的相关信息，请优先参考这些信息回答用户问题：\n\n{context}\n\n---\n请在回答时适当引用知识库中的相关信息。\n"""
-                    system_prompt += knowledge_prompt
+                knowledge_context = self._run_async_rag_search(user_input, kb_id, chat_history)
+        
+        # 获取记忆上下文
+        memory_context = self._get_memory_context(session_id)
+        
+        # 获取任务状态
+        task_status = self._get_task_status(session_id)
+        
+        # 使用新的分层提示词构建器
+        system_prompt = build_system_prompt(
+            user_input=user_input,
+            chat_history=chat_history,
+            memory_context=memory_context,
+            knowledge_context=knowledge_context,
+            task_status=task_status,
+            todo_reminder=todo_reminder if todo_reminder else None,
+            available_tools=available_tools
+        )
         
         # 添加系统提示
         messages.append(SystemMessage(content=system_prompt))
@@ -125,20 +144,98 @@ class AgentService:
                 messages.append(AIMessage(content=content))
             elif role == "system":
                 messages.append(SystemMessage(content=content))
-                
-        # 添加任务提醒
-        if todo_reminder:
-            messages.append(SystemMessage(content=todo_reminder))
-            
+        
         # 添加当前用户消息
         messages.append(HumanMessage(content=user_input))
         
         return messages
     
+    def _get_available_tool_names(self, session_id: str) -> List[str]:
+        """
+        获取当前会话可用的工具名称列表
+        
+        用于系统提示词中的工具感知
+        """
+        try:
+            tools = tool_manager.get_tools_for_session(
+                session_id,
+                self.session_store,
+                include_sub_agent=True
+            )
+            return [getattr(t, 'name', str(t)) for t in tools]
+        except Exception as e:
+            logger.warning(f"[AgentService] 获取工具列表失败: {e}")
+            return []
+    
+    def _get_memory_context(self, session_id: str, query: str = None) -> Optional[str]:
+        """
+        获取用户的记忆上下文
+        
+        从长期记忆中检索与当前对话相关的信息
+        
+        Args:
+            session_id: 会话ID
+            query: 查询文本（可选，用于语义检索）
+        """
+        if not session_id:
+            return None
+        
+        try:
+            # 使用长期记忆服务检索相关记忆
+            from services.context.long_term_memory import long_term_memory
+            
+            # 获取最近的用户信息（重要度高）
+            user_memories = long_term_memory.get_recent_memories(
+                limit=10,
+                memory_types=['user_info', 'preference', 'project']
+            )
+            
+            if user_memories:
+                # 格式化记忆上下文
+                lines = ["以下是已记录的用户信息："]
+                for mem in user_memories:
+                    mem_type = mem.get('memory_type', 'fact')
+                    content = mem.get('content', '')
+                    type_labels = {
+                        'user_info': '个人信息',
+                        'preference': '偏好',
+                        'project': '项目',
+                        'decision': '决策',
+                        'fact': '事实'
+                    }
+                    type_label = type_labels.get(mem_type, mem_type)
+                    lines.append(f"- [{type_label}] {content}")
+                return "\n".join(lines)
+            
+            return None
+        except Exception as e:
+            logger.warning(f"[AgentService] 获取记忆上下文失败: {e}")
+            return None
+    
+    def _get_task_status(self, session_id: str) -> Optional[str]:
+        """
+        获取当前任务状态摘要
+        """
+        if not session_id:
+            return None
+        
+        try:
+            from agent.tools.todo_manager import get_todo_manager
+            manager = get_todo_manager(session_id)
+            status = manager.get_status()
+            
+            if status and status.get("items"):
+                return manager.render()
+        except Exception as e:
+            logger.debug(f"[AgentService] 获取任务状态失败: {e}")
+        
+        return None
+    
     def _build_messages_for_cancel(
         self,
         chat_history: List[Dict],
-        context_message: str
+        context_message: str,
+        session_id: str = None
     ) -> List:
         """
         为取消/确认场景构建消息列表
@@ -146,14 +243,25 @@ class AgentService:
         Args:
             chat_history: 对话历史
             context_message: 上下文消息
+            session_id: 会话ID
             
         Returns:
             LangChain消息对象列表
         """
         messages = []
         
+        # 获取可用工具（用于工具感知）
+        available_tools = self._get_available_tool_names(session_id) if session_id else []
+        
+        # 构建简化版系统提示（取消场景不需要完整上下文）
+        system_prompt = build_system_prompt(
+            user_input=context_message,
+            chat_history=None,
+            available_tools=available_tools
+        )
+        
         # 添加系统提示
-        messages.append(SystemMessage(content=SYSTEM_PROMPT))
+        messages.append(SystemMessage(content=system_prompt))
         
         # 添加历史消息
         for msg in chat_history:
@@ -516,7 +624,7 @@ class AgentService:
                 
                 exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求。"
                 
-                messages = self._build_messages_for_cancel(chat_history, exec_context)
+                messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
                 agent = self._get_agent_for_session(session_id)
                 agent_result = agent.invoke({"messages": messages})
                 output = stream_handler.extract_ai_message(agent_result)
@@ -592,7 +700,7 @@ class AgentService:
                 exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求。"
                 
                 full_response = ""
-                messages = self._build_messages_for_cancel(chat_history, exec_context)
+                messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
                 agent = self._get_agent_for_session(session_id)
                 
                 for chunk in agent.stream(
@@ -662,7 +770,7 @@ class AgentService:
             if user_message:
                 cancel_context = f"用户取消了之前请求执行的命令。\n取消的命令: {command}\n\n请根据这个情况，给用户提供其他建议或替代方案。"
                 
-                messages = self._build_messages_for_cancel(chat_history, cancel_context)
+                messages = self._build_messages_for_cancel(chat_history, cancel_context, session_id)
                 full_response = ""
                 
                 agent = self._get_agent_for_session(session_id)
@@ -732,7 +840,7 @@ class AgentService:
             todo_mgr = get_todo_manager(session_id)
             reminder = todo_mgr.get_reminder_message()
             
-            messages = self._build_messages_for_cancel(chat_history, continue_context)
+            messages = self._build_messages_for_cancel(chat_history, continue_context, session_id)
             if reminder:
                 messages.insert(1, SystemMessage(content=reminder))
                 
@@ -818,7 +926,7 @@ class AgentService:
             todo_mgr = get_todo_manager(session_id)
             reminder = todo_mgr.get_reminder_message()
             
-            messages = self._build_messages_for_cancel(chat_history, continue_context)
+            messages = self._build_messages_for_cancel(chat_history, continue_context, session_id)
             if reminder:
                 messages.insert(1, SystemMessage(content=reminder))
                 

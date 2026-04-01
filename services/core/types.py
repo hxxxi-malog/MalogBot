@@ -183,6 +183,18 @@ class ConfirmationInfo:
     reason: str = ""
     message: str = "需要用户确认"
 
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'command': self.command,
+            'command_type': self.command_type,
+            'operation': self.operation,
+            'working_dir': self.working_dir,
+            'is_dangerous': self.is_dangerous,
+            'reason': self.reason,
+            'message': self.message
+        }
+
 
 # 默认配置常量
 DEFAULT_RELEVANCE_THRESHOLD = 0.65
