@@ -1,94 +1,145 @@
 # MalogBot
 
-一个基于 Flask 和 LangChain 的智能 AI 助手，支持工具调用、知识库问答（RAG）和联网搜索。
+基于 RAG（检索增强生成）和智能 Agent 的知识管理助手，集成了向量检索、混合检索、长期记忆、联网搜索等功能，提供全方位的知识管理和智能问答服务。
 
-## ✨ 功能特性
+## 项目简介
 
-### 核心功能
-- **🤖 智能对话** - 基于大语言模型的智能对话能力
-- **📊 流式响应** - 支持 token-by-token 的流式输出，打字机效果
-- **📂 会话管理** - 支持多会话创建、切换和对话历史管理
+MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库问答，结合大语言模型的能力，实现智能对话、工具调用、任务管理等功能。系统采用三层上下文架构，支持长期记忆和自动压缩，确保长对话场景下的稳定运行。
 
-### 工具能力
-- **💻 Bash 工具** - AI 可以执行 Bash 命令帮助用户完成任务
-- **✅ 命令确认机制** - 执行类命令需要用户确认，保障安全
-- **⚠️ 危险命令检测** - 自动检测 sudo、rm 等危险操作并警告
-- **🌐 联网搜索** - 支持百度云 MCP 联网搜索，获取实时信息
+## 核心特性
 
-### 知识库（RAG）
-- **📚 知识库管理** - 创建、删除知识库，支持多知识库切换
-- **📄 文档处理** - 支持 PDF、Word、Markdown、TXT 等多种格式
-- **🔍 向量检索** - 基于 pgvector 的 HNSW 索引，快速相似度搜索
-- **🎯 智能重排序** - 使用阿里云百炼 Rerank 模型优化检索结果
+### 智能对话
+- 基于 LangGraph 的 Agent 架构
+- 流式响应（SSE），支持 token-by-token 输出
+- 多轮对话支持，会话历史管理
+- 命令确认机制，危险操作检测
 
-### 可扩展性
-- **🔧 Skills 系统** - 支持自定义技能扩展
-- **🔌 MCP 协议** - 支持 Model Context Protocol 工具集成
+### RAG 知识库
+- 混合检索（向量 + BM25），支持权重配置
+- HNSW 向量索引，快速相似度搜索
+- 智能重排序（阿里云百炼 Rerank）
+- MMR 多样性重排序，避免重复内容
 
-## 📁 项目结构
+### 三层上下文架构
+- Journal（JSONL）：原始消息存储
+- Memory（向量）：长期记忆，支持语义检索
+- Summary：当前上下文摘要
+- 自动压缩机制，控制 Token 消耗
+
+### 工具系统
+- Bash 工具：执行命令，支持安全检测
+- Memory 工具：主动存储重要信息
+- Task 工具：任务创建和管理
+- Skills 工具：自定义技能扩展
+- Sub Agent：子代理协作
+
+### 联网搜索
+- 百度云 MCP Web Search 集成
+- 获取实时信息
+- 支持会话级别开关
+
+## 技术栈
+
+### 后端
+
+| 类别 | 技术 |
+|------|------|
+| 语言 | Python 3.10+ |
+| Web 框架 | Flask |
+| LLM 框架 | LangChain, LangGraph |
+| 大语言模型 | DeepSeek API |
+| 数据库 | PostgreSQL 15+ (pgvector) |
+| 向量化服务 | 阿里云百炼 |
+| 联网搜索 | 百度云 MCP |
+| 流式响应 | Server-Sent Events (SSE) |
+| 文档解析 | pdfplumber, python-docx |
+
+### 前端
+
+| 类别 | 技术 |
+|------|------|
+| 模板引擎 | Jinja2 |
+| 样式 | 原生 CSS |
+| 交互 | 原生 JavaScript |
+
+## 项目结构
 
 ```
-MalogBot/
-├── app.py                  # Flask 应用主入口
-├── config.py               # 配置管理模块
-├── requirements.txt        # 项目依赖
-├── .env                    # 环境变量配置（不提交到 git）
+malogbot/
+├── app.py                    # Flask 应用主入口
+├── config.py                 # 配置管理模块
+├── requirements.txt          # 项目依赖
+├── start_db.sh              # 数据库管理脚本
 │
-├── agent/                  # Agent 模块
-│   ├── llm.py              # LLM 客户端封装
-│   ├── prompts.py          # 提示词模板
-│   └── tools/              # 工具模块
-│       ├── bash.py         # Bash 命令执行工具
-│       ├── skills.py       # 技能加载工具
-│       ├── sub_agent.py    # 子代理工具
-│       ├── task_manager.py # 任务管理工具
-│       └── todo_manager.py # TODO 管理工具
+├── agent/                    # Agent 模块
+│   ├── llm.py               # LLM 客户端封装
+│   ├── prompts.py           # 提示词模板
+│   └── tools/               # 工具模块
+│       ├── bash.py          # Bash 命令执行
+│       ├── memory.py        # 长期记忆存储
+│       ├── skills.py        # 技能加载
+│       ├── sub_agent.py     # 子代理
+│       ├── task_manager.py  # 任务管理
+│       └── todo_manager.py  # TODO 管理
 │
-├── services/               # 服务层
-│   ├── chat_service.py     # 对话服务（流式/非流式）
-│   ├── db_manager.py       # 数据库管理
-│   ├── knowledge_base_service.py  # 知识库服务
-│   ├── document_service.py # 文档处理服务
-│   ├── rag_service.py      # RAG 检索服务
-│   ├── embedding_service.py # 向量化服务（阿里云百炼）
-│   └── session_store.py    # 会话存储
+├── services/                 # 服务层
+│   ├── core/                # 核心模块
+│   │   ├── interfaces.py    # 抽象接口定义
+│   │   └── types.py         # 核心类型定义
+│   ├── agent/               # Agent 服务
+│   ├── context/             # 上下文管理
+│   │   ├── session_store.py       # 会话存储
+│   │   ├── conversation_journal.py # 对话日志
+│   │   ├── context_compactor.py   # 上下文压缩
+│   │   └── long_term_memory.py    # 长期记忆
+│   ├── rag/                 # RAG 检索服务
+│   │   ├── rag_service.py         # 检索服务
+│   │   ├── embedding_service.py   # 向量化服务
+│   │   ├── bm25_service.py        # BM25 检索
+│   │   └── mmr_reranker.py        # MMR 重排序
+│   ├── knowledge_base/      # 知识库服务
+│   └── db_manager.py        # 数据库管理
 │
-├── models/                 # 数据模型
-│   ├── database.py         # 数据库基础模型
-│   └── knowledge_base.py   # 知识库相关模型
+├── models/                   # 数据模型
+│   ├── database.py          # 基础模型
+│   └── knowledge_base.py    # 知识库模型
 │
-├── mcp/                    # MCP 协议适配
-│   └── adapters.py         # 百度云 Web Search 适配器
+├── mcp/                      # MCP 协议适配
+│   └── adapters.py          # 百度云 Web Search
 │
-├── skills/                 # 技能模块
-│   └── postgres-performance-diagnosis/  # PostgreSQL 性能诊断技能
+├── skills/                   # 技能模块
+│   └── postgres-performance-diagnosis/
 │
-├── templates/              # HTML 模板
-│   └── index.html          # 对话界面
-│
-├── static/                 # 静态文件
-├── uploads/                # 文件上传目录
-└── postgres_data/          # PostgreSQL 数据目录（Docker）
+├── templates/                # HTML 模板
+├── static/                   # 静态文件
+├── uploads/                  # 文件上传目录
+└── archives/                 # 归档目录
+    ├── journals/            # 对话日志归档
+    └── transcripts/         # 转录归档
 ```
 
-## 🚀 快速开始
+## 快速开始
+
+### 环境要求
+
+- Python 3.10+
+- Docker（用于 PostgreSQL）
+- DeepSeek API Key
+- 阿里云百炼 API Key（可选，用于 RAG）
+- 百度云 API Key（可选，用于联网搜索）
 
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/MalogBot.git
-cd MalogBot
+git clone https://github.com/yourusername/malogbot.git
+cd malogbot
 ```
 
 ### 2. 创建虚拟环境
 
 ```bash
 python -m venv .venv
-```
 
-### 3. 激活虚拟环境
-
-```bash
 # macOS/Linux
 source .venv/bin/activate
 
@@ -96,13 +147,13 @@ source .venv/bin/activate
 .venv\Scripts\activate
 ```
 
-### 4. 安装依赖
+### 3. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 5. 启动数据库
+### 4. 启动数据库
 
 使用 Docker 启动 PostgreSQL（带 pgvector 扩展）：
 
@@ -121,33 +172,29 @@ docker run -d \
     ankane/pgvector:latest
 ```
 
-### 6. 配置环境变量
+### 5. 配置环境变量
 
 创建 `.env` 文件并配置：
 
 ```bash
 # ==================== LLM 配置 ====================
-DEEPSEEK_API_KEY=你的DeepSeek密钥
+DEEPSEEK_API_KEY=your-deepseek-api-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 MODEL_NAME=deepseek-chat
 
 # ==================== Flask 配置 ====================
-SECRET_KEY=你的Flask密钥
+SECRET_KEY=your-secret-key
 FLASK_DEBUG=True
 
 # ==================== 数据库配置 ====================
 DATABASE_URL=postgresql://malog:your_password@127.0.0.1:5433/malogbot
 
-# ==================== 工具配置 ====================
+# ==================== Agent 配置 ====================
 BASH_TIMEOUT=30
 AGENT_RECURSION_LIMIT=25
 
-# ==================== 联网搜索（百度云 MCP） ====================
-BAIDU_MCP_API_KEY=你的百度云API密钥
-WEB_SEARCH_ENABLED=false
-
 # ==================== 向量化服务（阿里云百炼） ====================
-DASHSCOPE_API_KEY=你的阿里云API密钥
+DASHSCOPE_API_KEY=your-dashscope-api-key
 EMBEDDING_MODEL=text-embedding-v4
 EMBEDDING_DIMENSION=1024
 RERANK_MODEL=qwen3-vl-rerank
@@ -157,6 +204,20 @@ RAG_TOP_N=10
 RAG_TOP_K=3
 CHUNK_SIZE=500
 CHUNK_OVERLAP=50
+ENABLE_HYBRID_SEARCH=true
+BM25_WEIGHT=0.3
+VECTOR_WEIGHT=0.7
+ENABLE_MMR=true
+MMR_ALPHA=0.7
+
+# ==================== 联网搜索（百度云 MCP） ====================
+BAIDU_MCP_API_KEY=your-baidu-api-key
+WEB_SEARCH_ENABLED=false
+
+# ==================== 长期记忆配置 ====================
+ENABLE_LONG_TERM_MEMORY=true
+MEMORY_TOKEN_BUDGET=2000
+MEMORY_RELEVANCE_THRESHOLD=0.65
 
 # ==================== 文件上传 ====================
 UPLOAD_FOLDER=./uploads
@@ -164,170 +225,224 @@ MAX_FILE_SIZE=10485760
 
 # ==================== LangSmith 追踪（可选） ====================
 LANGCHAIN_TRACING_V2=false
-LANGCHAIN_API_KEY=你的LangSmith密钥
+LANGCHAIN_API_KEY=your-langsmith-api-key
 LANGCHAIN_PROJECT=MalogBot
 ```
 
-### 7. 运行应用
+### 6. 运行应用
 
 ```bash
 python app.py
 ```
 
-访问 http://127.0.0.1:5000 开始对话。
+服务将在 http://127.0.0.1:5000 启动。
 
-## 📖 API 接口文档
+## 核心功能
+
+### 1. 知识库管理
+
+- 创建和管理知识库
+- 上传文档（PDF、DOCX、TXT、MD、JSON、CSV）
+- 自动分块和向量化
+- 文档删除和管理
+
+### 2. 智能对话
+
+- 基于 RAG 的知识问答
+- 流式响应（SSE）
+- 会话历史管理
+- 多轮对话支持
+- 命令确认机制
+
+### 3. RAG 检索
+
+- 向量检索（HNSW 索引）
+- BM25 关键词检索
+- 混合检索（加权融合）
+- 智能重排序
+- MMR 多样性优化
+
+### 4. 上下文管理
+
+三层架构设计：
+
+- Journal（JSONL）：原始消息存储，支持归档
+- Memory（向量）：长期记忆，语义检索
+- Summary：当前上下文，自动压缩
+
+### 5. 工具系统
+
+Agent 可用工具：
+
+- bash：执行 Bash 命令
+- memory：存储重要信息到长期记忆
+- skills：加载和执行自定义技能
+- sub_agent：创建子代理处理子任务
+- task_manager：任务管理
+- todo_manager：TODO 管理
+- context_compact：手动触发上下文压缩
+
+### 6. 安全机制
+
+- 命令分类：读取类直接执行，执行类需确认
+- 危险命令检测：sudo、rm、chmod 等
+- 白名单机制：允许特定危险命令模式
+
+## API 文档
 
 ### 会话管理
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/sessions` | GET | 获取所有会话列表 |
-| `/sessions/new` | POST | 创建新会话 |
-| `/sessions/<session_id>` | DELETE | 删除指定会话 |
-| `/sessions/<session_id>/switch` | POST | 切换到指定会话 |
-| `/sessions/<session_id>/info` | GET | 获取会话详情 |
-| `/sessions/<session_id>/knowledge-base` | GET/PUT | 获取/设置会话知识库 |
+```
+GET  /sessions                      # 获取会话列表
+POST /sessions/new                  # 创建新会话
+DELETE /sessions/<session_id>       # 删除会话
+POST /sessions/<session_id>/switch  # 切换会话
+GET  /sessions/<session_id>/info    # 获取会话详情
+GET  /sessions/<session_id>/knowledge-base  # 获取知识库设置
+PUT  /sessions/<session_id>/knowledge-base  # 设置知识库
+```
 
 ### 对话接口
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/chat` | POST | 非流式对话 |
-| `/chat/stream` | POST | 流式对话（SSE） |
-| `/history` | GET | 获取对话历史 |
-| `/reset` | POST | 重置当前会话 |
-| `/stop` | POST | 取消当前流式输出 |
+```
+POST /chat              # 非流式对话
+POST /chat/stream       # 流式对话（SSE）
+GET  /history           # 获取对话历史
+POST /reset             # 重置会话
+POST /stop              # 取消流式输出
+```
 
-### 命令确认接口
+### 命令确认
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/confirm` | POST | 确认执行命令（非流式） |
-| `/confirm/stream` | POST | 确认执行命令（流式） |
-| `/cancel` | POST | 取消命令执行 |
+```
+POST /confirm           # 确认执行命令（非流式）
+POST /confirm/stream    # 确认执行命令（流式）
+POST /cancel            # 取消命令执行
+```
 
-### 任务继续接口
+### 任务继续
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/continue` | POST | 继续执行因递归限制暂停的任务 |
-| `/continue/stream` | POST | 继续执行（流式） |
+```
+POST /continue          # 继续执行（非流式）
+POST /continue/stream   # 继续执行（流式）
+```
 
-### 联网搜索设置
+### 联网搜索
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/web-search/status` | GET | 获取联网搜索状态 |
-| `/web-search/toggle` | POST | 切换联网搜索开关 |
+```
+GET  /web-search/status  # 获取状态
+POST /web-search/toggle  # 切换开关
+```
 
 ### 知识库管理
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/knowledge-bases` | GET | 获取知识库列表 |
-| `/knowledge-bases` | POST | 创建知识库 |
-| `/knowledge-bases/<kb_id>` | GET | 获取知识库详情 |
-| `/knowledge-bases/<kb_id>` | DELETE | 删除知识库 |
-| `/knowledge-bases/<kb_id>/documents` | GET | 获取文档列表 |
-| `/knowledge-bases/<kb_id>/documents` | POST | 上传文档 |
-| `/documents/<doc_id>` | DELETE | 删除文档 |
+```
+GET  /knowledge-bases                  # 获取知识库列表
+POST /knowledge-bases                  # 创建知识库
+GET  /knowledge-bases/<kb_id>          # 获取知识库详情
+DELETE /knowledge-bases/<kb_id>        # 删除知识库
+GET  /knowledge-bases/<kb_id>/documents  # 获取文档列表
+POST /knowledge-bases/<kb_id>/documents  # 上传文档
+DELETE /documents/<doc_id>             # 删除文档
+```
 
-## 🔧 核心模块说明
+## 配置说明
 
-### Agent 模块
+### 检索配置
 
-- **llm.py** - 封装 LangChain 的 ChatOpenAI，连接 DeepSeek API
-- **prompts.py** - 定义 AI 助手的系统提示词和对话模板
-- **tools/bash.py** - 提供 Bash 命令执行能力
-  - 命令分类：读取类命令可直接执行，执行类命令需确认
-  - 危险命令检测：自动识别 sudo、rm 等危险操作
+可在 `.env` 中调整检索策略：
 
-### 服务层
+```bash
+# 混合检索开关
+ENABLE_HYBRID_SEARCH=true
 
-- **chat_service.py** - 统一的对话服务
-  - 流式和非流式输出支持
-  - 工具调用和命令确认机制
-  - 会话历史管理
-- **rag_service.py** - RAG 检索服务
-  - HNSW 向量索引检索
-  - 智能重排序
-- **embedding_service.py** - 阿里云百炼向量化服务
-  - 文本向量化
-  - 文档重排序
-- **document_service.py** - 文档处理服务
-  - 多格式文档解析（PDF、Word、Markdown、TXT）
-  - 文本分块
+# 权重配置
+BM25_WEIGHT=0.3          # 关键词匹配权重
+VECTOR_WEIGHT=0.7        # 语义相似度权重
 
-### MCP 模块
+# MMR 多样性
+ENABLE_MMR=true
+MMR_ALPHA=0.7            # 相关性权重（越大越偏向相关性）
 
-- **adapters.py** - MCP 协议适配器
-  - 百度云 Web Search 工具集成
-  - JSON-RPC 2.0 协议支持
+# 检索数量
+RAG_TOP_N=10             # 初始检索数量
+RAG_TOP_K=3              # 最终返回数量
+```
 
-## 🔒 安全机制
+### 上下文配置
 
-### 命令分类
+```bash
+# 最大上下文窗口
+MAX_CONTEXT_TOKENS=128000
 
-- **读取类命令** - `ls`、`cat`、`grep`、`pwd` 等，可直接执行
-- **执行类命令** - 创建文件、运行程序、删除等，需要用户确认
+# 压缩阈值比例
+COMPACT_THRESHOLD_RATIO=0.8
 
-### 危险命令检测
+# 长期记忆
+ENABLE_LONG_TERM_MEMORY=true
+MEMORY_TOKEN_BUDGET=2000
+MEMORY_RELEVANCE_THRESHOLD=0.65
+```
 
-系统会自动检测以下危险操作：
-- `sudo` - 超级用户权限
-- `rm` - 删除文件
-- `chmod` / `chown` - 权限修改
-- `dd`、`mkfs`、`fdisk` - 磁盘操作
-- `shutdown`、`reboot` - 系统控制
+### 模型配置
 
-## 🛠️ 技术栈
+支持多种模型提供商：
 
-| 类别 | 技术 |
-|------|------|
-| Web 框架 | Flask |
-| LLM 框架 | LangChain, LangGraph |
-| 大语言模型 | DeepSeek API |
-| 向量数据库 | PostgreSQL + pgvector |
-| 向量化服务 | 阿里云百炼 |
-| 联网搜索 | 百度云 MCP |
-| 流式响应 | Server-Sent Events (SSE) |
-| 文档解析 | pdfplumber, python-docx |
+- DeepSeek（默认）
+- 兼容 OpenAI API 的服务
 
-## 📊 数据库管理
+## 部署
+
+### Docker 部署
+
+```bash
+# 构建镜像
+docker build -t malogbot .
+
+# 运行容器
+docker run -d \
+    --name malogbot \
+    -p 5000:5000 \
+    --env-file .env \
+    malogbot
+```
+
+### 生产环境配置
+
+- 修改 `.env` 中的敏感配置
+- 设置 `FLASK_DEBUG=False`
+- 配置反向代理（Nginx）
+- 启用 HTTPS
+- 使用 Gunicorn 或 uWSGI
+
+## 数据库管理
 
 使用 `start_db.sh` 脚本管理数据库：
 
 ```bash
-# 启动数据库
-./start_db.sh start
-
-# 停止数据库
-./start_db.sh stop
-
-# 重启数据库
-./start_db.sh restart
-
-# 查看状态
-./start_db.sh status
-
-# 查看日志
-./start_db.sh logs
-
-# 连接数据库
-./start_db.sh connect
-
-# 备份数据库
-./start_db.sh backup
+./start_db.sh create   # 创建并启动
+./start_db.sh start    # 启动
+./start_db.sh stop     # 停止
+./start_db.sh restart  # 重启
+./start_db.sh status   # 查看状态
+./start_db.sh logs     # 查看日志
+./start_db.sh connect  # 连接数据库
+./start_db.sh backup   # 备份数据库
 ```
 
-## 📝 开发说明
+## 开发指南
+
+### 代码规范
+
+- Python：遵循 PEP 8 规范
+- 使用 dataclass 定义数据结构
+- 抽象接口与具体实现分离
 
 ### 添加新工具
 
 1. 在 `agent/tools/` 目录下创建新的工具文件
 2. 继承 `langchain_core.tools.BaseTool` 类
-3. 在 `chat_service.py` 中注册工具
+3. 在 `agent/tools/__init__.py` 中注册工具
 
 ### 添加新技能
 
@@ -335,6 +450,58 @@ python app.py
 2. 编写 `SKILL.md` 文件定义技能
 3. 系统会自动加载并识别技能
 
-## 📄 License
+### 测试
 
-MIT
+```bash
+# 运行测试
+python -m pytest tests/
+```
+
+## 架构设计
+
+### 核心接口
+
+系统采用依赖反转设计，高层模块依赖抽象接口：
+
+- `ISessionStore`：会话存储接口
+- `IContextCompactor`：上下文压缩接口
+- `IAgentService`：Agent 服务接口
+- `IRAGService`：RAG 检索接口
+- `IEmbeddingService`：向量化服务接口
+- `IKnowledgeBaseService`：知识库服务接口
+- `ILongTermMemory`：长期记忆接口
+
+### 三层上下文架构
+
+```
+┌─────────────────────────────────────────────┐
+│                   LLM                        │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│              注入的上下文                     │
+│  ┌─────────────┐  ┌─────────────────────┐   │
+│  │ Long-term   │  │    Journal          │   │
+│  │   Memory    │  │  (Recent Messages)  │   │
+│  │  (Rerank)   │  │                     │   │
+│  └─────────────┘  └─────────────────────┘   │
+└─────────────────────────────────────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+   ┌─────────┐  ┌──────────┐  ┌──────────┐
+   │ Vector  │  │  JSONL   │  │ Summary  │
+   │   DB    │  │  Archive │  │ (Compact)│
+   └─────────┘  └──────────┘  └──────────┘
+```
+
+## 许可证
+
+MIT License
+
+## 联系方式
+
+项目主页：GitHub
+
+问题反馈：Issues
