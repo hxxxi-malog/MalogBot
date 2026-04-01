@@ -17,8 +17,8 @@ from werkzeug.utils import secure_filename
 
 from config import Config
 from services.chat_service import chat_service
-from services.knowledge_base_service import knowledge_base_service
-from services.document_service import document_service
+from services.knowledge_base.knowledge_base_service import knowledge_base_service
+from services.knowledge_base.document_service import document_service
 
 # 创建Flask应用
 app = Flask(__name__)
