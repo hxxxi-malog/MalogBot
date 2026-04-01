@@ -105,7 +105,8 @@ class AgentService:
         if session_id:
             kb_id = self.session_store.get_knowledge_base_id(session_id)
             if kb_id:
-                context = self._run_async_rag_search(user_input, kb_id)
+                # 传递对话历史用于指代消解
+                context = self._run_async_rag_search(user_input, kb_id, chat_history)
                 if context:
                     knowledge_prompt = f"""\n\n## 知识库上下文\n\n以下是知识库中检索到的相关信息，请优先参考这些信息回答用户问题：\n\n{context}\n\n---\n请在回答时适当引用知识库中的相关信息。\n"""
                     system_prompt += knowledge_prompt
@@ -170,13 +171,19 @@ class AgentService:
         
         return messages
     
-    def _run_async_rag_search(self, query: str, kb_id: str) -> str:
+    def _run_async_rag_search(
+        self, 
+        query: str, 
+        kb_id: str, 
+        chat_history: List[Dict] = None
+    ) -> str:
         """
-        同步执行异步RAG检索
+        同步执行异步RAG检索（支持查询优化）
         
         Args:
             query: 查询文本
             kb_id: 知识库ID
+            chat_history: 对话历史（用于指代消解）
             
         Returns:
             检索到的上下文
@@ -188,10 +195,34 @@ class AgentService:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                from services.rag.rag_service import rag_service
-                result[0] = loop.run_until_complete(
-                    rag_service.search_with_context(query, kb_id)
-                )
+                # 判断是否启用增强版 RAG
+                if Config.ENABLE_ENHANCED_RAG:
+                    from services.rag.enhanced_rag_service import get_enhanced_rag_service
+                    enhanced_rag = get_enhanced_rag_service(llm_client=self.llm)
+                    
+                    # 使用增强版检索（带查询优化）
+                    search_result = loop.run_until_complete(
+                        enhanced_rag.search_with_optimization(
+                            query=query,
+                            knowledge_base_id=kb_id,
+                            chat_history=chat_history
+                        )
+                    )
+                    result[0] = search_result.integrated_context
+                    
+                    # 打印优化统计
+                    stats = enhanced_rag.get_optimization_stats(search_result)
+                    logger.info(f"[AgentService] RAG查询优化统计:")
+                    logger.info(f"  复杂度: {stats['complexity']}")
+                    logger.info(f"  优化步骤: {' -> '.join(stats['optimization_steps'])}")
+                    logger.info(f"  检索查询数: {stats['total_search_queries']}")
+                    logger.info(f"  总结果数: {stats['total_results']}")
+                else:
+                    # 使用基础 RAG 服务
+                    from services.rag.rag_service import rag_service
+                    result[0] = loop.run_until_complete(
+                        rag_service.search_with_context(query, kb_id)
+                    )
             except Exception as e:
                 error[0] = e
                 logger.error(f"[AgentService] RAG检索失败: {e}")

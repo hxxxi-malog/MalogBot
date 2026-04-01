@@ -133,3 +133,23 @@ class Config:
     
     # 压缩后保留的最近消息数
     KEEP_RECENT_MESSAGES = int(os.getenv('KEEP_RECENT_MESSAGES', '10'))
+
+    # ==================== RAG 查询优化配置 ====================
+    # 复杂长句查询优化：指代消解、Step-Back、问题分解、多查询重写
+    
+    # 成本控制
+    QUERY_OPT_MAX_SUB_QUESTIONS = int(os.getenv('QUERY_OPT_MAX_SUB_QUESTIONS', '5'))  # 最大子问题数量
+    QUERY_OPT_MAX_VARIANTS = int(os.getenv('QUERY_OPT_MAX_VARIANTS', '3'))  # 每个子问题的最大查询变体数
+    
+    # 功能开关
+    QUERY_OPT_ENABLE_COREFERENCE = os.getenv('QUERY_OPT_ENABLE_COREFERENCE', 'true').lower() == 'true'  # 启用指代消解
+    QUERY_OPT_ENABLE_STEP_BACK = os.getenv('QUERY_OPT_ENABLE_STEP_BACK', 'true').lower() == 'true'  # 启用 Step-Back
+    QUERY_OPT_ENABLE_DECOMPOSITION = os.getenv('QUERY_OPT_ENABLE_DECOMPOSITION', 'true').lower() == 'true'  # 启用问题分解
+    QUERY_OPT_ENABLE_MULTI_QUERY = os.getenv('QUERY_OPT_ENABLE_MULTI_QUERY', 'true').lower() == 'true'  # 启用多查询重写
+    
+    # 复杂度判断阈值
+    QUERY_OPT_SIMPLE_MAX_WORDS = int(os.getenv('QUERY_OPT_SIMPLE_MAX_WORDS', '10'))  # 简单查询的最大词数
+    QUERY_OPT_COMPLEX_MIN_WORDS = int(os.getenv('QUERY_OPT_COMPLEX_MIN_WORDS', '15'))  # 复杂查询的最小词数
+    
+    # 是否启用增强版 RAG（查询优化）
+    ENABLE_ENHANCED_RAG = os.getenv('ENABLE_ENHANCED_RAG', 'true').lower() == 'true'
