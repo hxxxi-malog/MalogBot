@@ -9,6 +9,10 @@ Agent 可以在对话中识别重要信息，并调用此工具进行向量化�
 2. 用户做出了重要决定
 3. 关键的项目配置或事实
 4. 需要在后续对话中记住的内容
+
+特性：
+- 长文本自动分块后再向量化存储
+- 每个分块独立向量化和存储，支持更精确的语义检索
 """
 import json
 import logging
@@ -23,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from services.db_manager import db_manager
 from services.embedding_service import embedding_service
+from services.chunk_service import chunk_service
 from models.database import LongTermMemory
 
 logger = logging.getLogger(__name__)
@@ -108,30 +113,70 @@ def store_memory(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            # 获取向量
-            embedding = loop.run_until_complete(
-                embedding_service.get_single_embedding(content)
+            # 1. 对内容进行分块
+            chunks = chunk_service.chunk_for_memory(content)
+            
+            if not chunks:
+                logger.warning("[MemoryTool] 内容为空，跳过存储")
+                return
+            
+            # 2. 批量获取所有分块的向量
+            embeddings = loop.run_until_complete(
+                embedding_service.get_embeddings(chunks)
             )
             
-            # 存储到数据库（session_id 设为 None，表示全局记忆，跨会话共享）
+            if not embeddings:
+                embeddings = [None] * len(chunks)
+            
+            # 3. 存储到数据库（session_id 设为 None，表示全局记忆，跨会话共享）
             with db_manager.get_session() as session:
-                memory = LongTermMemory(
-                    session_id=None,  # 全局记忆，跨会话共享
-                    memory_type=memory_type,
-                    content=content,
-                    embedding=json.dumps(embedding) if embedding else None,
-                    importance=importance,
-                    tags=json.dumps(tags) if tags else None,
-                    metadata_json=json.dumps({
-                        'stored_by': 'agent',
-                        'store_time': datetime.now().isoformat()
-                    }),
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
-                )
-                session.add(memory)
+                first_memory_id = None
+                total_chunks = len(chunks)
                 
-            logger.info(f"[MemoryTool] 已存储记忆: {content[:50]}... (类型: {memory_type}, 重要性: {importance})")
+                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    memory = LongTermMemory(
+                        session_id=None,  # 全局记忆，跨会话共享
+                        memory_type=memory_type,
+                        content=chunk,
+                        embedding=json.dumps(embedding) if embedding else None,
+                        importance=importance,
+                        tags=json.dumps(tags) if tags else None,
+                        metadata_json=json.dumps({
+                            'stored_by': 'agent',
+                            'store_time': datetime.now().isoformat(),
+                            'original_length': len(content)
+                        }),
+                        # 分块相关字段
+                        parent_id=None,
+                        chunk_index=i,
+                        total_chunks=total_chunks,
+                        created_at=datetime.now(),
+                        updated_at=datetime.now()
+                    )
+                    session.add(memory)
+                    session.flush()
+                    
+                    # 记录第一条记忆的ID
+                    if i == 0:
+                        first_memory_id = memory.id
+                
+                # 如果有多个分块，更新后续分块的 parent_id
+                if total_chunks > 1 and first_memory_id:
+                    # 查询刚插入的后续分块并更新 parent_id
+                    subsequent_chunks = session.query(LongTermMemory).filter(
+                        LongTermMemory.total_chunks == total_chunks,
+                        LongTermMemory.chunk_index > 0,
+                        LongTermMemory.session_id == None,
+                        LongTermMemory.memory_type == memory_type
+                    ).order_by(LongTermMemory.id.desc()).limit(total_chunks - 1).all()
+                    
+                    for chunk in subsequent_chunks:
+                        chunk.parent_id = first_memory_id
+            
+            logger.info(
+                f"[MemoryTool] 已存储记忆: {content[:50]}... "
+                f"(类型: {memory_type}, 重要性: {importance}, 分块数: {total_chunks})"
+            )
             
         except Exception as e:
             logger.error(f"[MemoryTool] 存储记忆失败: {e}")
@@ -174,34 +219,78 @@ def store_memories_batch(memories: List[Dict[str, Any]]) -> str:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            # 批量获取向量
-            contents = [m.get('content', '') for m in memories]
+            # 1. 首先对所有记忆内容进行分块
+            all_chunks = []
+            chunk_info = []  # 记录每个分块对应的原始记忆信息
+            
+            for mem_idx, mem in enumerate(memories):
+                content = mem.get('content', '')
+                chunks = chunk_service.chunk_for_memory(content)
+                
+                for chunk_idx, chunk in enumerate(chunks):
+                    all_chunks.append(chunk)
+                    chunk_info.append({
+                        'mem_idx': mem_idx,
+                        'chunk_idx': chunk_idx,
+                        'total_chunks': len(chunks),
+                        'memory': mem
+                    })
+            
+            if not all_chunks:
+                logger.warning("[MemoryTool] 没有需要存储的内容")
+                return
+            
+            logger.info(f"[MemoryTool] 批量存储: {len(memories)} 条记忆, 分块后共 {len(all_chunks)} 个分块")
+            
+            # 2. 批量获取所有分块的向量
             embeddings = loop.run_until_complete(
-                embedding_service.get_embeddings(contents)
+                embedding_service.get_embeddings(all_chunks)
             )
             
             if not embeddings:
-                embeddings = [None] * len(memories)
+                embeddings = [None] * len(all_chunks)
             
-            # 批量存储（session_id 设为 None，全局记忆）
+            # 3. 批量存储（session_id 设为 None，全局记忆）
             with db_manager.get_session() as session:
-                for i, mem in enumerate(memories):
-                    memory_type = mem.get('memory_type', 'fact')
-                    importance = mem.get('importance', MEMORY_IMPORTANCE.get(memory_type, 0.75))
+                # 记录每条原始记忆的第一个分块ID
+                first_chunk_ids = {}  # mem_idx -> first_chunk_id
+                
+                for i, info in enumerate(chunk_info):
+                    mem_idx = info['mem_idx']
+                    memory = info['memory']
+                    chunk_idx = info['chunk_idx']
+                    total_chunks = info['total_chunks']
                     
-                    memory = LongTermMemory(
+                    memory_type = memory.get('memory_type', 'fact')
+                    importance = memory.get('importance', MEMORY_IMPORTANCE.get(memory_type, 0.75))
+                    
+                    db_memory = LongTermMemory(
                         session_id=None,  # 全局记忆，跨会话共享
                         memory_type=memory_type,
-                        content=mem.get('content', ''),
+                        content=all_chunks[i],
                         embedding=json.dumps(embeddings[i]) if embeddings and embeddings[i] else None,
                         importance=importance,
-                        tags=json.dumps(mem.get('tags', [])),
+                        tags=json.dumps(memory.get('tags', [])),
+                        metadata_json=json.dumps({
+                            'stored_by': 'agent',
+                            'store_time': datetime.now().isoformat(),
+                            'original_length': len(memory.get('content', ''))
+                        }),
+                        # 分块相关字段
+                        parent_id=None,
+                        chunk_index=chunk_idx,
+                        total_chunks=total_chunks,
                         created_at=datetime.now(),
                         updated_at=datetime.now()
                     )
-                    session.add(memory)
+                    session.add(db_memory)
+                    session.flush()
+                    
+                    # 记录第一条分块的ID
+                    if chunk_idx == 0:
+                        first_chunk_ids[mem_idx] = db_memory.id
             
-            logger.info(f"[MemoryTool] 批量存储了 {len(memories)} 条记忆")
+            logger.info(f"[MemoryTool] 批量存储了 {len(memories)} 条记忆, 共 {len(all_chunks)} 个分块")
             
         except Exception as e:
             logger.error(f"[MemoryTool] 批量存储失败: {e}")

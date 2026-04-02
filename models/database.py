@@ -122,6 +122,8 @@ class LongTermMemory(Base):
     
     用于存储从对话中提取的关键信息，支持向量检索。
     这些记忆可以在后续会话中通过语义搜索被检索出来。
+    
+    长文本记忆会被分块存储，每个分块通过 parent_id 关联到原始记忆组。
     """
     __tablename__ = 'long_term_memories'
     
@@ -135,6 +137,11 @@ class LongTermMemory(Base):
     access_count = Column(Integer, default=0)  # 访问次数
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    
+    # 分块相关字段
+    parent_id = Column(Integer, nullable=True, index=True)  # 父记忆ID（用于分块关联，NULL表示原始记忆或单条记忆）
+    chunk_index = Column(Integer, default=0)  # 分块索引（0表示原始记忆或第一个分块）
+    total_chunks = Column(Integer, default=1)  # 总分块数（1表示未分块）
     
     # 元数据
     tags = Column(Text, nullable=True)  # 标签（JSON数组格式）
@@ -151,6 +158,9 @@ class LongTermMemory(Base):
             'importance': self.importance,
             'access_count': self.access_count,
             'source_archive_id': self.source_archive_id,
+            'parent_id': self.parent_id,
+            'chunk_index': self.chunk_index,
+            'total_chunks': self.total_chunks,
             'tags': json.loads(self.tags) if self.tags else [],
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
