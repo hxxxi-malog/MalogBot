@@ -323,7 +323,9 @@ def chat_stream():
 
             # 调用流式服务
             for chunk in chat_service.chat_stream(user_input, session_id):
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                # 立即发送事件，不缓冲
+                event_data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                yield event_data
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': f'服务器错误: {str(e)}'}, ensure_ascii=False)}\n\n"
@@ -334,7 +336,8 @@ def chat_stream():
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
         }
     )
 

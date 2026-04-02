@@ -37,11 +37,23 @@ from services.agent.stream_handler import stream_handler, CONFIRMATION_REQUIRED_
 from services.agent.tool_manager import tool_manager
 from services.context.context_compactor import check_context_overflow, emergency_compact
 
+# 导入团队模式
+from agent.team import (
+    AgentsTeam,
+    get_agents_team,
+    remove_agents_team,
+    ExecutionMode
+)
+
 logger = logging.getLogger(__name__)
 
 
 class AgentService:
     """Agent服务 - 管理Agent的执行和状态"""
+    
+    # 团队模式配置
+    TEAM_MODE_ENABLED = True  # 启用团队模式（支持实时进度推送）
+    MAX_FOLLOWERS = 3  # 最大Follower数量
     
     def __init__(self, session_store, context_compactor):
         """
@@ -65,6 +77,9 @@ class AgentService:
         
         # 存储上下文超限状态
         self._context_overflow_states: Dict[str, Dict[str, Any]] = {}
+        
+        # 存储团队执行结果（用于前端展示）
+        self._team_results: Dict[str, Dict[str, Any]] = {}
         
     def _get_agent_for_session(self, session_id: str):
         """
@@ -524,8 +539,11 @@ class AgentService:
             # 获取Agent
             agent = self._get_agent_for_session(session_id)
             
-            # 执行（不再使用recursion_limit）
-            result = agent.invoke({"messages": messages})
+            # 执行（设置很大的recursion_limit，实际上移除步数限制）
+            result = agent.invoke(
+                {"messages": messages},
+                config={"recursion_limit": 1000}
+            )
             
             # 提取输出
             output = stream_handler.extract_ai_message(result)
@@ -664,10 +682,11 @@ class AgentService:
             # 收集完整响应
             full_response = ""
             
-            # 流式执行（不再使用recursion_limit）
+            # 流式执行（设置很大的recursion_limit，实际上移除步数限制）
             for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"]
+                stream_mode=["messages", "updates"],
+                config={"recursion_limit": 1000}
             ):
                 # 检查取消
                 if self.is_cancelled(session_id):
@@ -695,7 +714,10 @@ class AgentService:
             # 如果没有获取到内容，使用invoke作为备用
             if not full_response:
                 agent = self._get_agent_for_session(session_id)
-                result = agent.invoke({"messages": messages})
+                result = agent.invoke(
+                    {"messages": messages},
+                    config={"recursion_limit": 1000}
+                )
                 full_response = stream_handler.extract_ai_message(result)
                 
                 # 检查确认请求
@@ -1065,7 +1087,7 @@ class AgentService:
             chat_history = self.session_store.get_messages(session_id)
             
             continue_context = (
-                f"任务执行已继续（之前达到了 {Config.AGENT_RECURSION_LIMIT} 步限制）。\n"
+                f"任务执行已继续。\n"
                 f"请继续完成之前的任务。如果任务已经完成，请总结结果。"
             )
             
@@ -1083,7 +1105,7 @@ class AgentService:
             
             result = agent.invoke(
                 {"messages": messages},
-                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+                config={"recursion_limit": 1000}
             )
             
             output = stream_handler.extract_ai_message(result)
@@ -1119,8 +1141,7 @@ class AgentService:
             
             return {
                 "type": ChatResponseType.RECURSION_LIMIT_REACHED.value,
-                "message": f"再次达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。是否继续执行？",
-                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "message": "执行步数较多，是否继续执行？",
                 "session_id": session_id
             }
             
@@ -1154,7 +1175,7 @@ class AgentService:
             chat_history = self.session_store.get_messages(session_id)
             
             continue_context = (
-                f"任务执行已继续（之前达到了 {Config.AGENT_RECURSION_LIMIT} 步限制）。\n"
+                f"任务执行已继续。\n"
                 f"请继续完成之前的任务。如果任务已经完成，请总结结果。"
             )
             
@@ -1174,7 +1195,8 @@ class AgentService:
             
             for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"]
+                stream_mode=["messages", "updates"],
+                config={"recursion_limit": 1000}
             ):
                 if self.is_cancelled(session_id):
                     if full_response:
@@ -1291,7 +1313,8 @@ class AgentService:
             
             for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"]
+                stream_mode=["messages", "updates"],
+                config={"recursion_limit": 1000}
             ):
                 if self.is_cancelled(session_id):
                     if full_response:
@@ -1344,6 +1367,329 @@ class AgentService:
         """清除取消标志"""
         if session_id in self._cancel_flags:
             del self._cancel_flags[session_id]
+    
+    # ==================== 团队模式方法 ====================
+    
+    def _get_agents_team(self, session_id: str) -> AgentsTeam:
+        """
+        获取或创建会话的AgentsTeam
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            AgentsTeam实例
+        """
+        tools = tool_manager.get_tools_for_session(
+            session_id,
+            self.session_store,
+            include_sub_agent=True
+        )
+        
+        return get_agents_team(
+            session_id=session_id,
+            tools=tools,
+            session_store=self.session_store,
+            max_followers=self.MAX_FOLLOWERS
+        )
+    
+    def chat_with_routing(
+        self,
+        user_input: str,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """
+        带路由的对话执行（非流式）
+        
+        自动判断是否需要团队模式：
+        1. 意图识别与路由
+        2. 简单任务 -> 单Agent执行
+        3. 复杂任务 -> 团队模式执行
+        
+        Args:
+            user_input: 用户输入
+            session_id: 会话ID
+            
+        Returns:
+            响应字典
+        """
+        if not self.TEAM_MODE_ENABLED:
+            # 团队模式未启用，走原有流程
+            return self.chat(user_input, session_id)
+        
+        try:
+            # 获取AgentsTeam
+            team = self._get_agents_team(session_id)
+            
+            # 获取对话历史
+            chat_history, _ = self.session_store.get_full_context(session_id, user_input)
+            
+            # 路由决策
+            result = team.process(user_input, chat_history)
+            
+            if result.get("mode") == "single_agent":
+                # 单Agent模式，走原有流程
+                logger.info(f"[AgentService] 路由决策: 单Agent模式")
+                return self.chat(user_input, session_id)
+            
+            else:
+                # 团队模式已执行完成
+                logger.info(f"[AgentService] 团队模式执行完成")
+                
+                # 保存执行结果
+                self._team_results[session_id] = result
+                
+                # 保存对话历史
+                self.session_store.add_message(session_id, "user", user_input)
+                
+                # 格式化输出
+                if result.get("success"):
+                    output = result.get("final_output", "团队执行完成")
+                else:
+                    output = f"团队执行遇到问题：{result.get('error', '未知错误')}\n\n已完成的任务：\n" + "\n".join([
+                        f"- {task_id}: {task_info.get('status')}"
+                        for task_id, task_info in result.get("subtask_results", {}).items()
+                    ])
+                
+                self.session_store.add_message(session_id, "assistant", output)
+                
+                return {
+                    "type": ChatResponseType.RESPONSE.value,
+                    "output": output,
+                    "session_id": session_id,
+                    "execution_mode": "team_mode",
+                    "stats": result.get("stats"),
+                    "decision": result.get("decision")
+                }
+                
+        except Exception as e:
+            logger.error(f"[AgentService] 团队模式执行失败，回退到单Agent模式: {e}")
+            return self.chat(user_input, session_id)
+    
+    def chat_stream_with_routing(
+        self,
+        user_input: str,
+        session_id: str
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        带路由的流式对话执行
+        
+        自动判断是否需要团队模式：
+        1. 意图识别与路由
+        2. 简单任务 -> 单Agent流式执行
+        3. 复杂任务 -> 团队模式执行（实时推送进度）
+        
+        Args:
+            user_input: 用户输入
+            session_id: 会话ID
+            
+        Yields:
+            流式数据字典
+        """
+        if not self.TEAM_MODE_ENABLED:
+            # 团队模式未启用，走原有流程
+            yield from self.chat_stream(user_input, session_id)
+            return
+        
+        try:
+            # 获取AgentsTeam
+            team = self._get_agents_team(session_id)
+            
+            # 获取对话历史
+            chat_history, _ = self.session_store.get_full_context(session_id, user_input)
+            
+            # 使用流式路由处理
+            final_output = None
+            execution_stats = {}
+            
+            for progress in team.process_stream(user_input, chat_history):
+                progress_type = progress.get("type")
+                
+                if progress_type == "routing_decision":
+                    # 路由决策
+                    if progress.get("mode") == "single_agent":
+                        logger.info(f"[AgentService] 路由决策: 单Agent模式")
+                        yield from self.chat_stream(user_input, session_id)
+                        return
+                    else:
+                        logger.info(f"[AgentService] 路由决策: 团队模式")
+                        yield {
+                            "type": "team_mode_start",
+                            "decision": {
+                                "mode": progress.get("mode"),
+                                "complexity_score": progress.get("complexity_score"),
+                                "reasoning": progress.get("reasoning")
+                            }
+                        }
+                
+                elif progress_type == "single_agent_mode":
+                    # 单Agent模式，走原有流程
+                    yield from self.chat_stream(user_input, session_id)
+                    return
+                
+                elif progress_type == "task_decomposition":
+                    # 任务拆解中
+                    yield {
+                        "type": "team_progress",
+                        "stage": "decomposition",
+                        "message": progress.get("message", "正在拆解任务...")
+                    }
+                
+                elif progress_type == "team_start":
+                    # 团队执行开始
+                    yield {
+                        "type": "team_progress",
+                        "stage": "start",
+                        "goal": progress.get("goal"),
+                        "total_tasks": progress.get("total_tasks"),
+                        "parallel_groups": progress.get("parallel_groups")
+                    }
+                
+                elif progress_type == "group_start":
+                    # 并行组开始
+                    logger.info(f"[AgentService] 转发 group_start 事件: 组 {progress.get('group_index')}, 任务数: {len(progress.get('tasks', []))}")
+                    yield {
+                        "type": "team_progress",
+                        "stage": "group_start",
+                        "group_index": progress.get("group_index"),
+                        "total_groups": progress.get("total_groups"),
+                        "tasks": progress.get("tasks")
+                    }
+                
+                elif progress_type == "task_start":
+                    # 任务开始
+                    yield {
+                        "type": "team_progress",
+                        "stage": "task_start",
+                        "task_id": progress.get("task_id"),
+                        "description": progress.get("description")
+                    }
+                
+                elif progress_type == "task_complete":
+                    # 任务完成
+                    yield {
+                        "type": "team_progress",
+                        "stage": "task_complete",
+                        "task_id": progress.get("task_id"),
+                        "success": progress.get("success"),
+                        "summary": progress.get("summary")
+                    }
+                
+                elif progress_type == "group_complete":
+                    # 并行组完成
+                    yield {
+                        "type": "team_progress",
+                        "stage": "group_complete",
+                        "group_index": progress.get("group_index")
+                    }
+                
+                elif progress_type == "team_integrating":
+                    # 整合结果
+                    yield {
+                        "type": "team_progress",
+                        "stage": "integrating",
+                        "message": progress.get("message", "正在整合结果...")
+                    }
+                
+                elif progress_type == "team_integrating_content":
+                    # 流式整合结果内容
+                    yield {
+                        "type": "team_integrating_content",
+                        "content": progress.get("content"),
+                        "accumulated": progress.get("accumulated")
+                    }
+                
+                elif progress_type == "team_complete":
+                    # 团队执行完成
+                    final_output = progress.get("output", "团队执行完成")
+                    execution_stats = progress.get("stats", {})
+                    
+                    # 保存对话历史
+                    self.session_store.add_message(session_id, "user", user_input)
+                    self.session_store.add_message(session_id, "assistant", final_output)
+                    
+                    # 发送完成信号（不再重复流式输出，因为已经在 team_integrating_content 中流式输出了）
+                    yield {
+                        "type": ChatResponseType.DONE.value,
+                        "content": final_output,
+                        "execution_mode": "team_mode",
+                        "stats": execution_stats
+                    }
+                
+                elif progress_type == "team_error":
+                    # 团队执行错误
+                    error_msg = progress.get("error", "团队执行失败")
+                    self.session_store.add_message(session_id, "user", user_input)
+                    self.session_store.add_message(session_id, "assistant", f"团队执行遇到问题：{error_msg}")
+                    
+                    yield {
+                        "type": ChatResponseType.ERROR.value,
+                        "output": f"团队执行失败: {error_msg}"
+                    }
+            
+        except Exception as e:
+            logger.error(f"[AgentService] 团队模式执行失败，回退到单Agent模式: {e}")
+            yield from self.chat_stream(user_input, session_id)
+    
+    def get_team_status(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取团队执行状态
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            团队状态信息
+        """
+        try:
+            team = self._get_agents_team(session_id)
+            return team.get_status()
+        except Exception as e:
+            logger.warning(f"[AgentService] 获取团队状态失败: {e}")
+            return None
+    
+    def get_task_board_view(self, session_id: str) -> str:
+        """
+        获取任务看板视图
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            格式化的任务看板字符串
+        """
+        try:
+            team = self._get_agents_team(session_id)
+            return team.get_task_board_view()
+        except Exception as e:
+            return f"获取任务看板失败: {e}"
+    
+    def cleanup_session(self, session_id: str) -> None:
+        """
+        清理会话相关的所有资源
+        
+        Args:
+            session_id: 会话ID
+        """
+        # 清理原有的会话资源
+        remove_todo_manager(session_id)
+        remove_task_manager(session_id)
+        clear_session_tools(session_id)
+        
+        # 清理团队模式资源
+        remove_agents_team(session_id)
+        
+        # 清理状态
+        if session_id in self._cancel_flags:
+            del self._cancel_flags[session_id]
+        if session_id in self._recursion_pause_states:
+            del self._recursion_pause_states[session_id]
+        if session_id in self._context_overflow_states:
+            del self._context_overflow_states[session_id]
+        if session_id in self._team_results:
+            del self._team_results[session_id]
+        
+        logger.info(f"[AgentService] 会话 {session_id} 资源已清理")
 
 
 __all__ = ['AgentService']

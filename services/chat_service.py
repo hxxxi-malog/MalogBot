@@ -102,7 +102,11 @@ class ChatService:
     
     def chat(self, user_input: str, session_id: str = "default") -> Dict[str, Any]:
         """
-        非流式执行对话
+        非流式执行对话（带智能路由）
+        
+        自动判断是否需要团队模式：
+        - 简单任务 -> 单Agent执行
+        - 复杂任务 -> 团队模式执行
         
         Args:
             user_input: 用户输入
@@ -111,7 +115,7 @@ class ChatService:
         Returns:
             响应字典
         """
-        return self._agent_service.chat(user_input, session_id)
+        return self._agent_service.chat_with_routing(user_input, session_id)
     
     def chat_stream(
         self,
@@ -119,7 +123,11 @@ class ChatService:
         session_id: str = "default"
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        流式执行对话
+        流式执行对话（带智能路由）
+        
+        自动判断是否需要团队模式：
+        - 简单任务 -> 单Agent流式执行
+        - 复杂任务 -> 团队模式执行
         
         Args:
             user_input: 用户输入
@@ -128,7 +136,7 @@ class ChatService:
         Yields:
             流式数据字典
         """
-        yield from self._agent_service.chat_stream(user_input, session_id)
+        yield from self._agent_service.chat_stream_with_routing(user_input, session_id)
     
     def confirm_command(
         self,
