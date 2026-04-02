@@ -1637,6 +1637,8 @@ class AgentService:
         """
         获取团队执行状态
         
+        返回详细的进度信息，供前端轮询使用
+        
         Args:
             session_id: 会话ID
             
@@ -1645,10 +1647,64 @@ class AgentService:
         """
         try:
             team = self._get_agents_team(session_id)
-            return team.get_status()
+            leader = team.leader
+            task_board = leader.task_board
+            plan = task_board.get_plan()
+            
+            if not plan:
+                return {
+                    "status": "idle",
+                    "message": "当前没有执行计划"
+                }
+            
+            # 获取进度信息
+            progress = task_board.get_progress()
+            
+            # 构建任务列表
+            tasks = []
+            for group_idx, group in enumerate(plan.parallel_groups):
+                group_tasks = []
+                for task_id in group:
+                    task = plan.subtasks.get(task_id)
+                    if task:
+                        task_info = {
+                            "id": task_id,
+                            "description": task.description,
+                            "status": task.status.value,
+                            "priority": task.priority.value
+                        }
+                        if task.result:
+                            task_info["result"] = task.result[:200] if len(task.result) > 200 else task.result
+                        if task.error:
+                            task_info["error"] = task.error
+                        if task.assigned_to:
+                            task_info["assigned_to"] = task.assigned_to
+                        group_tasks.append(task_info)
+                tasks.append({
+                    "group_index": group_idx + 1,
+                    "total_groups": len(plan.parallel_groups),
+                    "tasks": group_tasks
+                })
+            
+            return {
+                "status": "active",
+                "goal": plan.goal,
+                "total_tasks": len(plan.subtasks),
+                "completed": progress.get("completed", 0),
+                "in_progress": progress.get("in_progress", 0),
+                "pending": progress.get("pending", 0),
+                "failed": progress.get("failed", 0),
+                "parallel_groups": len(plan.parallel_groups),
+                "tasks": tasks,
+                "execution_log": leader._execution_log[-10:] if leader._execution_log else []
+            }
+            
         except Exception as e:
             logger.warning(f"[AgentService] 获取团队状态失败: {e}")
-            return None
+            return {
+                "status": "error",
+                "error": str(e)
+            }
     
     def get_task_board_view(self, session_id: str) -> str:
         """

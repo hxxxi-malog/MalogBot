@@ -295,6 +295,32 @@ class ChatService:
             kb_id: 知识库ID
         """
         session_store.set_knowledge_base_id(session_id, kb_id)
+    
+    # ==================== 团队状态查询 ====================
+    
+    def get_team_status(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取团队执行状态
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            团队状态信息
+        """
+        return self._agent_service.get_team_status(session_id)
+    
+    def get_task_board_view(self, session_id: str) -> str:
+        """
+        获取任务看板视图
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            任务看板字符串
+        """
+        return self._agent_service.get_task_board_view(session_id)
 
 
 # 创建全局实例

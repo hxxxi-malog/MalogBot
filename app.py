@@ -835,5 +835,53 @@ def set_session_knowledge_base(session_id: str):
         }), 500
 
 
+# ==================== 团队模式状态查询 API ====================
+
+@app.route('/team/status', methods=['GET'])
+def get_team_status():
+    """
+    获取当前会话的团队执行状态
+    
+    用于前端轮询获取任务进度
+    """
+    try:
+        session_id = get_session_id()
+        status = chat_service.get_team_status(session_id)
+        
+        if status is None:
+            return jsonify({
+                'status': 'idle',
+                'message': '当前没有团队执行'
+            })
+        
+        return jsonify({
+            'status': 'ok',
+            'team_status': status
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取团队状态失败: {str(e)}'
+        }), 500
+
+
+@app.route('/team/task-board', methods=['GET'])
+def get_task_board():
+    """
+    获取任务看板视图
+    """
+    try:
+        session_id = get_session_id()
+        view = chat_service.get_task_board_view(session_id)
+        
+        return jsonify({
+            'status': 'ok',
+            'task_board': view
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取任务看板失败: {str(e)}'
+        }), 500
+
+
 if __name__ == '__main__':
     app.run(debug=Config.DEBUG, port=5000)

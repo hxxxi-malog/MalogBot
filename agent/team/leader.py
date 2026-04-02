@@ -779,9 +779,13 @@ class LeaderAgent:
         并行执行（流式版本）
         
         改进：使用 FollowerPool.execute_parallel_stream 实时发送事件
+        增加更详细的日志和错误处理
         """
         if not self._current_plan:
+            logger.warning("[Leader] _execute_parallel_stream: 没有执行计划")
             return
+        
+        logger.info(f"[Leader] 开始流式并行执行，共 {len(self._current_plan.parallel_groups)} 个并行组")
         
         for group_idx, group in enumerate(self._current_plan.parallel_groups):
             # 获取该组任务的描述信息
@@ -806,6 +810,8 @@ class LeaderAgent:
             # 执行当前组，确保所有任务完成
             max_iterations = 100  # 防止无限循环
             iteration = 0
+            tasks_in_group = set(group)  # 该组的所有任务ID
+            completed_in_group = set()  # 该组已完成的任务ID
             
             while iteration < max_iterations:
                 iteration += 1
@@ -820,19 +826,31 @@ class LeaderAgent:
                     
                     if in_progress == 0:
                         # 当前组所有任务已完成
+                        logger.info(f"[Leader] 并行组 {group_idx + 1} 所有任务已完成")
                         break
                     
                     # 还有任务在执行中，等待
+                    logger.debug(f"[Leader] 等待任务完成... (iteration {iteration})")
                     time.sleep(0.5)
                     continue
                 
                 # 使用流式执行方法，实时发送事件
                 self._runtime_batch_seq += 1
                 batch_id = str(self._runtime_batch_seq)
+                logger.info(f"[Leader] 执行批次 {batch_id}, 就绪任务数: {len(ready_tasks)}")
+                
                 for event in self.follower_pool.execute_parallel_stream(batch_id=batch_id):
+                    # 记录任务完成
+                    if event.get("type") == "task_complete":
+                        task_id = event.get("task_id")
+                        if task_id in tasks_in_group:
+                            completed_in_group.add(task_id)
+                            logger.info(f"[Leader] 任务 {task_id} 完成，组内进度: {len(completed_in_group)}/{len(tasks_in_group)}")
+                    
                     yield event
             
             # 发送并行组完成信号
+            logger.info(f"[Leader] 发送 group_complete 事件: 组 {group_idx + 1}")
             yield {
                 "type": "group_complete",
                 "group_index": group_idx + 1
