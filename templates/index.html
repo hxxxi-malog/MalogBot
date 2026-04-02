@@ -892,6 +892,30 @@
             }
         }
 
+        /* ==================== 团队模式进度样式 ==================== */
+        .spinner-small {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--gray-300);
+            border-top-color: var(--primary-600);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .team-progress-header {
+            margin-bottom: var(--spacing-md);
+        }
+
+        .team-progress-container {
+            font-size: 13px;
+        }
+
         /* ==================== 命令确认卡片 ==================== */
         .confirm-card {
             margin-top: var(--spacing-lg);
@@ -1939,6 +1963,188 @@
                                 } else if (data.type === 'error') {
                                     typingIndicator.classList.remove('show');
                                     addMessage(data.content, 'assistant');
+                                
+                                // ========== 团队模式进度处理 ==========
+                                } else if (data.type === 'team_mode_start') {
+                                    // 团队模式开始
+                                    typingIndicator.classList.remove('show');
+                                    
+                                    // 创建团队进度容器
+                                    if (!messageElement) {
+                                        messageElement = addMessage('', 'assistant');
+                                    }
+                                    
+                                    // 添加团队模式头部
+                                    const teamHeader = document.createElement('div');
+                                    teamHeader.className = 'team-progress-header';
+                                    teamHeader.innerHTML = `
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                                            <div style="width: 32px; height: 32px; background: var(--primary-100); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center;">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--primary-600)" stroke-width="2">
+                                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                                    <circle cx="9" cy="7" r="4"></circle>
+                                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                                                </svg>
+                                            </div>
+                                            <div>
+                                                <div style="font-weight: 600; color: var(--gray-900);">团队协作模式</div>
+                                                <div style="font-size: 12px; color: var(--gray-500);">复杂度评分: ${data.decision?.complexity_score || 'N/A'}</div>
+                                            </div>
+                                        </div>
+                                    `;
+                                    messageElement.appendChild(teamHeader);
+                                    
+                                    // 创建进度容器
+                                    let progressContainer = document.createElement('div');
+                                    progressContainer.className = 'team-progress-container';
+                                    progressContainer.style.cssText = 'background: var(--gray-50); border-radius: var(--radius-lg); padding: 12px; margin-top: 8px;';
+                                    messageElement.appendChild(progressContainer);
+                                    
+                                    // 存储引用
+                                    messageElement._teamProgressContainer = progressContainer;
+                                    messageElement._completedTasks = 0;
+                                    messageElement._totalTasks = 0;
+                                
+                                } else if (data.type === 'team_progress') {
+                                    // 团队执行进度
+                                    const stage = data.stage;
+                                    let progressContainer = messageElement?._teamProgressContainer;
+                                    
+                                    // 如果 progressContainer 不存在，跳过
+                                    if (!progressContainer) {
+                                        console.warn('team_progress: progressContainer not found for stage:', stage);
+                                        continue;
+                                    }
+                                    
+                                    if (stage === 'decomposition') {
+                                        const div = document.createElement('div');
+                                        div.className = 'team-decomposition';
+                                        div.innerHTML = `
+                                            <div style="display: flex; align-items: center; gap: 8px; color: var(--gray-600);">
+                                                <div class="spinner-small"></div>
+                                                <span>${data.message || '正在拆解任务...'}</span>
+                                            </div>
+                                        `;
+                                        progressContainer.appendChild(div);
+                                    
+                                    } else if (stage === 'start') {
+                                        messageElement._totalTasks = data.total_tasks || 0;
+                                        // 存储并行组信息
+                                        messageElement._parallelGroupsInfo = {
+                                            total: data.parallel_groups || 0,
+                                            current: 0
+                                        };
+                                        // 移除 decomposition 阶段的 spinner
+                                        const decompositionDiv = progressContainer.querySelector('.team-decomposition');
+                                        if (decompositionDiv) {
+                                            decompositionDiv.remove();
+                                        }
+                                        const div = document.createElement('div');
+                                        div.className = 'team-start-info';
+                                        div.innerHTML = `
+                                            <div style="margin-bottom: 8px; font-weight: 500; color: var(--gray-700);">任务拆解完成</div>
+                                            <div style="display: flex; gap: 16px; font-size: 12px; color: var(--gray-500);">
+                                                <span>总任务: ${data.total_tasks}</span>
+                                                <span>并行组: ${data.parallel_groups}</span>
+                                            </div>
+                                        `;
+                                        progressContainer.appendChild(div);
+                                    
+                                    } else if (stage === 'group_start') {
+                                        const groupDiv = document.createElement('div');
+                                        groupDiv.className = 'team-group';
+                                        groupDiv.dataset.groupIndex = data.group_index;
+                                        groupDiv.style.cssText = 'margin-top: 12px; padding: 8px; background: white; border-radius: var(--radius-md); border: 1px solid var(--gray-200);';
+                                        
+                                        // 获取该组的任务描述列表（如果有）
+                                        const tasksInfo = data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0 
+                                            ? `<span style="color: var(--gray-500); font-weight: normal;"> - ${data.tasks.length} 个任务</span>`
+                                            : '';
+                                        
+                                        groupDiv.innerHTML = `
+                                            <div style="font-size: 12px; font-weight: 500; color: var(--gray-600); margin-bottom: 6px;">
+                                                并行组 ${data.group_index}/${data.total_groups}${tasksInfo}
+                                            </div>
+                                            <div class="group-tasks" style="display: flex; flex-direction: column; gap: 4px;"></div>
+                                        `;
+                                        progressContainer.appendChild(groupDiv);
+                                        // 更新当前组的引用
+                                        messageElement._currentGroup = groupDiv;
+                                    
+                                    } else if (stage === 'task_start') {
+                                        const groupTasks = messageElement._currentGroup?.querySelector('.group-tasks');
+                                        if (groupTasks) {
+                                            const taskDiv = document.createElement('div');
+                                            taskDiv.className = 'team-task';
+                                            taskDiv.dataset.taskId = data.task_id;
+                                            taskDiv.style.cssText = 'display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--primary-50); border-radius: var(--radius-sm); font-size: 13px;';
+                                            taskDiv.innerHTML = `
+                                                <div class="spinner-small"></div>
+                                                <span style="color: var(--gray-700); flex: 1;">${escapeHtml(data.description || data.task_id)}</span>
+                                            `;
+                                            groupTasks.appendChild(taskDiv);
+                                        }
+                                    
+                                    } else if (stage === 'task_complete') {
+                                        const taskDiv = progressContainer.querySelector(`[data-task-id="${data.task_id}"]`);
+                                        if (taskDiv) {
+                                            messageElement._completedTasks++;
+                                            const success = data.success;
+                                            taskDiv.style.background = success ? 'var(--success-50)' : 'var(--danger-50)';
+                                            taskDiv.innerHTML = `
+                                                <span style="color: ${success ? 'var(--success-600)' : 'var(--danger-600)'};">${success ? '✓' : '✗'}</span>
+                                                <span style="color: var(--gray-700); flex: 1;">${escapeHtml(data.summary || data.task_id)}</span>
+                                            `;
+                                        }
+                                    
+                                    } else if (stage === 'group_complete') {
+                                        // 并行组完成
+                                        const currentGroup = messageElement._currentGroup;
+                                        if (currentGroup) {
+                                            currentGroup.style.borderColor = 'var(--success-300)';
+                                        }
+                                    
+                                    } else if (stage === 'integrating') {
+                                        const div = document.createElement('div');
+                                        div.className = 'team-integrating';
+                                        div.innerHTML = `
+                                            <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px; color: var(--primary-600);">
+                                                <div class="spinner-small"></div>
+                                                <span>${data.message || '正在整合结果...'}</span>
+                                            </div>
+                                        `;
+                                        progressContainer.appendChild(div);
+                                    }
+                                
+                                // 流式整合结果内容
+                                } else if (data.type === 'team_integrating_content') {
+                                    // 确保有进度容器
+                                    let progressContainer = messageElement?._teamProgressContainer;
+                                    
+                                    // 如果还没有整合结果区域，创建一个
+                                    if (!messageElement._integratingDiv) {
+                                        const integratingDiv = document.createElement('div');
+                                        integratingDiv.className = 'team-integrating-result';
+                                        integratingDiv.style.cssText = 'margin-top: 16px; padding: 12px; background: white; border-radius: var(--radius-lg); border: 1px solid var(--gray-200);';
+                                        integratingDiv.innerHTML = '<div style="font-weight: 500; margin-bottom: 8px; color: var(--gray-700);">整合结果</div><div class="integrating-content" style="line-height: 1.6; color: var(--gray-800); white-space: pre-wrap;"></div>';
+                                        
+                                        if (progressContainer) {
+                                            progressContainer.appendChild(integratingDiv);
+                                        } else if (messageElement) {
+                                            messageElement.appendChild(integratingDiv);
+                                        }
+                                        
+                                        messageElement._integratingDiv = integratingDiv;
+                                    }
+                                    
+                                    // 更新内容
+                                    const contentDiv = messageElement._integratingDiv.querySelector('.integrating-content');
+                                    if (contentDiv && data.accumulated) {
+                                        contentDiv.innerHTML = renderMarkdown(data.accumulated);
+                                        // 滚动到底部
+                                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                                    }
                                 }
 
                             } catch (e) {
