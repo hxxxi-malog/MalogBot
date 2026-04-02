@@ -20,7 +20,8 @@ class ChatResponseType(str, Enum):
     """聊天响应类型枚举"""
     RESPONSE = "response"
     CONFIRMATION_REQUIRED = "confirmation_required"
-    RECURSION_LIMIT_REACHED = "recursion_limit_reached"
+    RECURSION_LIMIT_REACHED = "recursion_limit_reached"  # 保留向后兼容
+    CONTEXT_LIMIT_REACHED = "context_limit_reached"  # 新增：上下文窗口超限
     ERROR = "error"
     CANCELLED = "cancelled"
     DONE = "done"

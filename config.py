@@ -32,8 +32,20 @@ class Config:
     # 工具配置
     BASH_TIMEOUT = int(os.getenv('BASH_TIMEOUT', '30'))  # 命令超时时间（秒）
     
-    # Agent 配置
-    AGENT_RECURSION_LIMIT = int(os.getenv('AGENT_RECURSION_LIMIT', '25'))  # Agent 递归限制
+    # Agent 配置 - 上下文窗口限制
+    # 取消最大步数限制，改为最大上下文窗口限制
+    MAX_CONTEXT_TOKENS = int(os.getenv('MAX_CONTEXT_TOKENS', '128000'))  # 模型最大上下文窗口
+    CONTEXT_WARNING_THRESHOLD = float(os.getenv('CONTEXT_WARNING_THRESHOLD', '0.9'))  # 90%时警告
+    EMERGENCY_COMPACT_KEEP_MESSAGES = int(os.getenv('EMERGENCY_COMPACT_KEEP_MESSAGES', '3'))  # 紧急压缩保留消息数
+    
+    # 子Agent模式配置
+    # default: 同进程，共享messages数组，低隔离，简单任务委派
+    # fork: 独立进程，全新messages数组，共享文件缓存，中隔离，研究性任务
+    SUB_AGENT_DEFAULT_MODE = os.getenv('SUB_AGENT_DEFAULT_MODE', 'default')
+    SUB_AGENT_FORK_TIMEOUT = int(os.getenv('SUB_AGENT_FORK_TIMEOUT', '300'))  # fork模式超时（秒）
+    
+    # 子Agent递归限制（保留用于防止单个子Agent无限执行）
+    SUB_AGENT_RECURSION_LIMIT = int(os.getenv('SUB_AGENT_RECURSION_LIMIT', '50'))
 
     # LangSmith 可视化追踪配置
     LANGCHAIN_TRACING_V2 = os.getenv('LANGCHAIN_TRACING_V2', 'false').lower() == 'true'

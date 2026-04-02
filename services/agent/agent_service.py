@@ -35,6 +35,7 @@ from agent.tools.memory import MEMORY_TOOLS
 from services.core.types import ChatResponse, ChatResponseType
 from services.agent.stream_handler import stream_handler, CONFIRMATION_REQUIRED_MARKER
 from services.agent.tool_manager import tool_manager
+from services.context.context_compactor import check_context_overflow, emergency_compact
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ class AgentService:
         
         # 存储每个会话因递归限制中断时的状态
         self._recursion_pause_states: Dict[str, Dict[str, Any]] = {}
+        
+        # 存储上下文超限状态
+        self._context_overflow_states: Dict[str, Dict[str, Any]] = {}
         
     def _get_agent_for_session(self, session_id: str):
         """
@@ -335,6 +339,8 @@ class AgentService:
         """
         为取消/确认场景构建消息列表
         
+        重要：必须包含任务状态和规划信息，否则Agent会丢失任务进度
+        
         Args:
             chat_history: 对话历史
             context_message: 上下文消息
@@ -348,10 +354,18 @@ class AgentService:
         # 获取可用工具（用于工具感知）
         available_tools = self._get_available_tool_names(session_id) if session_id else []
         
-        # 构建简化版系统提示（取消场景不需要完整上下文）
+        # 获取任务状态
+        task_status = self._get_task_status(session_id)
+        
+        # 获取记忆上下文
+        memory_context = self._get_memory_context(session_id)
+        
+        # 构建完整的系统提示（包含任务状态）
         system_prompt = build_system_prompt(
             user_input=context_message,
-            chat_history=None,
+            chat_history=chat_history,
+            memory_context=memory_context,
+            task_status=task_status,
             available_tools=available_tools
         )
         
@@ -366,7 +380,12 @@ class AgentService:
             if role == "user":
                 messages.append(HumanMessage(content=content))
             elif role == "assistant":
-                messages.append(AIMessage(content=content))
+                # 处理包含 tool_calls 的 assistant 消息
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    messages.append(AIMessage(content=content, tool_calls=tool_calls))
+                else:
+                    messages.append(AIMessage(content=content))
             # 跳过system角色
                 
         # 添加上下文消息
@@ -449,6 +468,25 @@ class AgentService:
         Returns:
             响应字典
         """
+        # 检查上下文窗口是否超限
+        overflow_info = check_context_overflow(session_id)
+        if overflow_info["is_overflow"]:
+            # 保存当前状态
+            self._context_overflow_states[session_id] = {
+                "user_input": user_input,
+                "token_count": overflow_info["token_count"],
+                "usage_ratio": overflow_info["usage_ratio"]
+            }
+            
+            return {
+                "type": ChatResponseType.CONTEXT_LIMIT_REACHED.value,
+                "message": f"会话上下文已达到最大窗口限制（{overflow_info['token_count']}/{overflow_info['max_tokens']} tokens，{overflow_info['usage_ratio']*100:.1f}%）",
+                "token_count": overflow_info["token_count"],
+                "max_tokens": overflow_info["max_tokens"],
+                "usage_ratio": overflow_info["usage_ratio"],
+                "session_id": session_id
+            }
+        
         # 获取会话历史
         chat_history, context_stats = self.session_store.get_full_context(session_id, user_input)
         
@@ -486,11 +524,8 @@ class AgentService:
             # 获取Agent
             agent = self._get_agent_for_session(session_id)
             
-            # 执行
-            result = agent.invoke(
-                {"messages": messages},
-                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
-            )
+            # 执行（不再使用recursion_limit）
+            result = agent.invoke({"messages": messages})
             
             # 提取输出
             output = stream_handler.extract_ai_message(result)
@@ -529,7 +564,7 @@ class AgentService:
             }
             
         except GraphRecursionError:
-            # 达到递归限制
+            # 保留向后兼容，但这种情况不应该再发生
             self._recursion_pause_states[session_id] = {
                 "chat_history": chat_history,
                 "user_input": user_input,
@@ -540,8 +575,7 @@ class AgentService:
             
             return {
                 "type": ChatResponseType.RECURSION_LIMIT_REACHED.value,
-                "message": f"已达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。任务可能还未完成。",
-                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "message": "执行步数较多，建议考虑简化任务或使用子Agent。",
                 "session_id": session_id
             }
             
@@ -569,6 +603,26 @@ class AgentService:
         """
         # 清除取消标志
         self.clear_cancel_flag(session_id)
+        
+        # 检查上下文窗口是否超限
+        overflow_info = check_context_overflow(session_id)
+        if overflow_info["is_overflow"]:
+            # 保存当前状态
+            self._context_overflow_states[session_id] = {
+                "user_input": user_input,
+                "token_count": overflow_info["token_count"],
+                "usage_ratio": overflow_info["usage_ratio"]
+            }
+            
+            yield {
+                "type": ChatResponseType.CONTEXT_LIMIT_REACHED.value,
+                "message": f"会话上下文已达到最大窗口限制（{overflow_info['token_count']}/{overflow_info['max_tokens']} tokens，{overflow_info['usage_ratio']*100:.1f}%）",
+                "token_count": overflow_info["token_count"],
+                "max_tokens": overflow_info["max_tokens"],
+                "usage_ratio": overflow_info["usage_ratio"],
+                "session_id": session_id
+            }
+            return
         
         # 获取会话历史
         chat_history, context_stats = self.session_store.get_full_context(session_id, user_input)
@@ -610,11 +664,10 @@ class AgentService:
             # 收集完整响应
             full_response = ""
             
-            # 流式执行
+            # 流式执行（不再使用recursion_limit）
             for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"],
-                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+                stream_mode=["messages", "updates"]
             ):
                 # 检查取消
                 if self.is_cancelled(session_id):
@@ -699,7 +752,7 @@ class AgentService:
             }
             
         except GraphRecursionError:
-            # 达到递归限制
+            # 保留向后兼容
             self._recursion_pause_states[session_id] = {
                 "chat_history": chat_history,
                 "user_input": user_input,
@@ -712,8 +765,7 @@ class AgentService:
                 
             yield {
                 "type": ChatResponseType.RECURSION_LIMIT_REACHED.value,
-                "message": f"已达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。任务可能还未完成。",
-                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "message": "执行步数较多，建议考虑简化任务或使用子Agent。",
                 "partial_output": full_response
             }
             
@@ -745,9 +797,28 @@ class AgentService:
             result = execute_confirmed_bash(command)
             
             if user_message:
+                # 获取会话历史
                 chat_history = self.session_store.get_messages(session_id)
                 
-                exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求。"
+                # 构建执行上下文，包含用户原始请求和当前进度
+                exec_context = f"""命令已执行成功。
+
+**执行的命令:** {command}
+
+**执行结果:**
+{result}
+
+---
+
+请继续完成用户的原始请求。
+
+**用户原始请求:** {user_message}
+
+**重要提醒:**
+- 向目标收束，禁止发散思维
+- 已完成的任务不要重复执行
+- 继续执行下一个待完成任务
+"""
                 
                 messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
                 
@@ -761,6 +832,8 @@ class AgentService:
                 # 检查下一个确认请求
                 confirmation_info = stream_handler.extract_confirmation_info(output)
                 if confirmation_info:
+                    # 保存当前的助手消息
+                    self.session_store.add_message(session_id, "assistant", output)
                     return {
                         "type": ChatResponseType.CONFIRMATION_REQUIRED.value,
                         "command": confirmation_info.command,
@@ -824,9 +897,28 @@ class AgentService:
             }
             
             if user_message:
+                # 获取会话历史
                 chat_history = self.session_store.get_messages(session_id)
                 
-                exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求。"
+                # 构建执行上下文，包含用户原始请求和当前进度
+                exec_context = f"""命令已执行成功。
+
+**执行的命令:** {command}
+
+**执行结果:**
+{result}
+
+---
+
+请继续完成用户的原始请求。
+
+**用户原始请求:** {user_message}
+
+**重要提醒:**
+- 向目标收束，禁止发散思维
+- 已完成的任务不要重复执行
+- 继续执行下一个待完成任务
+"""
                 
                 full_response = ""
                 messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
@@ -856,6 +948,9 @@ class AgentService:
                                 full_response = processed.get("accumulated", full_response)
                                 yield processed
                             elif processed.get("type") == ChatResponseType.CONFIRMATION_REQUIRED.value:
+                                # 保存当前的助手消息再返回
+                                if full_response:
+                                    self.session_store.add_message(session_id, "assistant", full_response)
                                 yield processed
                                 return
                                 
@@ -1079,8 +1174,7 @@ class AgentService:
             
             for chunk in agent.stream(
                 {"messages": messages},
-                stream_mode=["messages", "updates"],
-                config={"recursion_limit": Config.AGENT_RECURSION_LIMIT}
+                stream_mode=["messages", "updates"]
             ):
                 if self.is_cancelled(session_id):
                     if full_response:
@@ -1121,8 +1215,7 @@ class AgentService:
                 
             yield {
                 "type": ChatResponseType.RECURSION_LIMIT_REACHED.value,
-                "message": f"再次达到最大执行步数限制（{Config.AGENT_RECURSION_LIMIT}步）。是否继续执行？",
-                "recursion_limit": Config.AGENT_RECURSION_LIMIT,
+                "message": "执行步数较多，是否继续执行？",
                 "partial_output": full_response
             }
             
@@ -1130,6 +1223,107 @@ class AgentService:
             yield {
                 "type": ChatResponseType.ERROR.value,
                 "content": f"继续执行失败: {str(e)}"
+            }
+    
+    def continue_with_emergency_compact(
+        self,
+        session_id: str
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        紧急压缩后继续执行任务
+        
+        当上下文超限后，用户选择继续时调用此方法
+        
+        Args:
+            session_id: 会话ID
+            
+        Yields:
+            流式数据字典
+        """
+        self.clear_cancel_flag(session_id)
+        
+        overflow_state = self._context_overflow_states.pop(session_id, None)
+        
+        if not overflow_state:
+            yield {
+                "type": ChatResponseType.ERROR.value,
+                "content": "没有找到上下文超限状态"
+            }
+            return
+        
+        try:
+            # 执行紧急压缩
+            compact_result = emergency_compact(
+                session_id=session_id,
+                llm_client=self.llm
+            )
+            
+            if not compact_result.get("success"):
+                yield {
+                    "type": ChatResponseType.ERROR.value,
+                    "content": f"紧急压缩失败：{compact_result.get('message')}"
+                }
+                return
+            
+            # 更新session_store
+            from services.context.context_compactor import context_compactor
+            chat_history, _ = self.session_store.get_full_context(session_id, overflow_state.get("user_input", ""))
+            
+            # 设置会话工具
+            self._setup_session_tools(session_id)
+            
+            # 构建继续执行的上下文
+            continue_context = f"""上下文已紧急压缩（保留了最近 {Config.EMERGENCY_COMPACT_KEEP_MESSAGES} 条消息）。
+
+请继续完成用户的原始请求：{overflow_state.get('user_input', '')}
+
+重要提醒：
+- 向目标收束，禁止发散思维
+- 只执行必需的操作
+- 完成后立即返回结果
+"""
+            
+            messages = self._build_messages_for_cancel(chat_history, continue_context, session_id)
+            messages = self._apply_micro_compact(messages)
+            
+            agent = self._get_agent_for_session(session_id)
+            full_response = ""
+            
+            for chunk in agent.stream(
+                {"messages": messages},
+                stream_mode=["messages", "updates"]
+            ):
+                if self.is_cancelled(session_id):
+                    if full_response:
+                        self.session_store.add_message(session_id, "assistant", full_response)
+                    yield {
+                        "type": ChatResponseType.CANCELLED.value,
+                        "content": full_response
+                    }
+                    return
+                    
+                if isinstance(chunk, tuple):
+                    processed = stream_handler.process_stream_chunk(chunk, full_response)
+                    if processed:
+                        if processed.get("type") == ChatResponseType.CONTENT.value:
+                            full_response = processed.get("accumulated", full_response)
+                            yield processed
+                        elif processed.get("type") == ChatResponseType.CONFIRMATION_REQUIRED.value:
+                            yield processed
+                            return
+            
+            if full_response:
+                self.session_store.add_message(session_id, "assistant", full_response)
+                
+            yield {
+                "type": ChatResponseType.DONE.value,
+                "content": full_response
+            }
+            
+        except Exception as e:
+            yield {
+                "type": ChatResponseType.ERROR.value,
+                "content": f"紧急压缩后继续执行失败: {str(e)}"
             }
     
     def _setup_session_tools(self, session_id: str):

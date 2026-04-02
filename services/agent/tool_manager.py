@@ -26,6 +26,7 @@ class ToolManager:
         self._skills_tools = None
         self._memory_tools = None
         self._task_manager_tools = None
+        self._planning_tools = None
         
     def _init_base_tools(self):
         """延迟初始化基础工具"""
@@ -96,6 +97,13 @@ class ToolManager:
         from agent.tools.task_manager import TASK_MANAGER_TOOLS
         self._task_manager_tools = list(TASK_MANAGER_TOOLS)
         
+    def _init_planning_tools(self):
+        """延迟初始化规划工具"""
+        if self._planning_tools is not None:
+            return
+        from agent.tools.planning import PLANNING_TOOLS
+        self._planning_tools = list(PLANNING_TOOLS)
+        
     def _get_web_search_tool(self):
         """懒加载Web搜索工具"""
         if self._web_search_tool is None:
@@ -131,6 +139,7 @@ class ToolManager:
         self._init_skills_tools()
         self._init_memory_tools()
         self._init_task_manager_tools()
+        self._init_planning_tools()
         
         # 根据是否是子Agent选择基础工具集
         if include_sub_agent:
@@ -140,6 +149,9 @@ class ToolManager:
             
         # 添加任务管理工具
         tools.extend(self._task_manager_tools)
+        
+        # 添加规划工具
+        tools.extend(self._planning_tools)
         
         # 添加技能工具
         tools.extend(self._skills_tools)

@@ -59,6 +59,10 @@ class ContextCompactor:
     - Journal（JSONL）：完整原始对话，可恢复
     - Memory（向量数据库）：Agent主动存储的关键信息，RAG检索+Rerank过滤
     - Summary（当前上下文）：压缩摘要，轻量级
+    
+    新增功能：
+    - 上下文窗口超限检测
+    - 紧急压缩机制：保留最近n条消息并生成摘要
     """
     
     def __init__(
@@ -66,7 +70,9 @@ class ContextCompactor:
         keep_recent_tools: int = KEEP_RECENT_TOOL_RESULTS,
         keep_recent_messages: int = KEEP_RECENT_MESSAGES,
         enable_long_term_memory: bool = ENABLE_LONG_TERM_MEMORY,
-        memory_relevance_threshold: float = MEMORY_RELEVANCE_THRESHOLD
+        memory_relevance_threshold: float = MEMORY_RELEVANCE_THRESHOLD,
+        emergency_keep_messages: int = None,
+        context_warning_threshold: float = None
     ):
         """
         初始化上下文压缩器
@@ -76,15 +82,21 @@ class ContextCompactor:
             keep_recent_messages: 压缩后保留的最近消息数量
             enable_long_term_memory: 是否启用长期记忆功能
             memory_relevance_threshold: 记忆相关性阈值（Rerank分数）
+            emergency_keep_messages: 紧急压缩时保留的消息数
+            context_warning_threshold: 上下文警告阈值比例
         """
         self.keep_recent_tools = keep_recent_tools
         self.keep_recent_messages = keep_recent_messages
         self.enable_long_term_memory = enable_long_term_memory
         self.memory_relevance_threshold = memory_relevance_threshold
         
+        # 紧急压缩配置
+        self.emergency_keep_messages = emergency_keep_messages or Config.EMERGENCY_COMPACT_KEEP_MESSAGES
+        self.context_warning_threshold = context_warning_threshold or Config.CONTEXT_WARNING_THRESHOLD
+        
         # 模型上下文窗口
-        self.max_context_tokens = conversation_journal.max_context_tokens
-        self.compact_threshold = conversation_journal.compact_threshold
+        self.max_context_tokens = Config.MAX_CONTEXT_TOKENS
+        self.compact_threshold = int(self.max_context_tokens * Config.COMPACT_THRESHOLD_RATIO)
     
     # ==================== 消息追加 ====================
     
@@ -119,6 +131,159 @@ class ContextCompactor:
             tool_calls=tool_calls,
             tool_name=tool_name
         )
+    
+    # ==================== 上下文窗口超限检测 ====================
+    
+    def check_context_overflow(self, session_id: str) -> Dict[str, Any]:
+        """
+        检查上下文窗口是否超限
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            包含超限信息的字典：
+            - is_overflow: 是否超限
+            - is_warning: 是否接近超限
+            - token_count: 当前token数
+            - max_tokens: 最大token数
+            - usage_ratio: 使用比例
+        """
+        token_count = conversation_journal.get_token_count(session_id)
+        usage_ratio = token_count / self.max_context_tokens
+        
+        is_overflow = usage_ratio >= 1.0
+        is_warning = usage_ratio >= self.context_warning_threshold
+        
+        return {
+            "is_overflow": is_overflow,
+            "is_warning": is_warning,
+            "token_count": token_count,
+            "max_tokens": self.max_context_tokens,
+            "usage_ratio": usage_ratio,
+            "tokens_remaining": max(0, self.max_context_tokens - token_count)
+        }
+    
+    def emergency_compact(
+        self,
+        session_id: str,
+        llm_client: Optional[Any] = None,
+        keep_messages: int = None
+    ) -> Dict[str, Any]:
+        """
+        紧急压缩：保留最近n条消息并生成摘要
+        
+        当用户选择继续任务时调用此方法，最大化压缩上下文
+        
+        Args:
+            session_id: 会话ID
+            llm_client: LLM客户端（用于生成摘要）
+            keep_messages: 保留的消息数（默认使用配置）
+            
+        Returns:
+            压缩结果
+        """
+        keep_messages = keep_messages or self.emergency_keep_messages
+        
+        # 读取所有消息
+        all_messages = conversation_journal.read_messages(session_id)
+        
+        if len(all_messages) <= keep_messages:
+            return {
+                "success": False,
+                "message": "消息数量不足，无需紧急压缩",
+                "original_count": len(all_messages),
+                "compressed_count": len(all_messages)
+            }
+        
+        # 归档当前Journal
+        archive_id = conversation_journal.archive_journal(session_id)
+        
+        # 分离消息
+        old_messages = all_messages[:-keep_messages]
+        recent_messages = all_messages[-keep_messages:]
+        
+        # 生成紧急摘要
+        summary = ""
+        if llm_client and old_messages:
+            summary = self._generate_emergency_summary(old_messages, llm_client)
+        else:
+            summary = self._simple_summary(old_messages)
+        
+        # 存储关键信息到长期记忆
+        if self.enable_long_term_memory and archive_id:
+            long_term_memory.process_messages_async(
+                messages=all_messages,
+                session_id=session_id,
+                source_archive_id=archive_id
+            )
+        
+        # 构建压缩后的消息
+        compressed = []
+        
+        # 系统消息（紧急摘要）
+        system_content = f"""## 紧急上下文压缩
+
+由于上下文窗口接近限制，系统已执行紧急压缩。
+
+### 历史摘要
+{summary}
+
+### 注意事项
+- 完整对话已归档（ID: {archive_id}）
+- 请专注于当前任务目标，向目标收束
+- 禁止发散思维，只执行必需的操作
+"""
+        compressed.append({
+            'role': 'system',
+            'content': system_content
+        })
+        
+        # 最近消息
+        compressed.extend(recent_messages)
+        
+        logger.info(f"[emergency_compact] 紧急压缩完成，从 {len(all_messages)} 条压缩到 {len(compressed)} 条")
+        
+        return {
+            "success": True,
+            "archive_id": archive_id,
+            "original_count": len(all_messages),
+            "compressed_count": len(compressed),
+            "summary": summary,
+            "message": f"紧急压缩完成：保留最近 {keep_messages} 条消息"
+        }
+    
+    def _generate_emergency_summary(self, messages: List[Dict], llm_client: Any) -> str:
+        """
+        生成紧急摘要
+        
+        强调向目标收束，提取关键决策和待完成任务
+        """
+        conversation_text = "\n".join([
+            f"{msg.get('role', 'unknown')}: {str(msg.get('content', ''))[:300]}"
+            for msg in messages[:30]  # 限制处理数量
+        ])
+        
+        summary_prompt = f"""请为以下对话生成紧急摘要，要求：
+1. 极其简洁（不超过200字）
+2. 明确核心目标和当前进度
+3. 列出已完成的操作
+4. 列出待完成的关键步骤
+5. 提取关键文件路径和决策
+
+对话内容：
+{conversation_text}
+
+摘要："""
+        
+        try:
+            if hasattr(llm_client, 'invoke'):
+                response = llm_client.invoke(summary_prompt)
+                return response.content if hasattr(response, 'content') else str(response)
+        except Exception as e:
+            logger.error(f"[emergency_compact] 摘要生成失败: {e}")
+        
+        return self._simple_summary(messages)
     
     # ==================== 第一层：微观压缩 ====================
     
@@ -603,6 +768,20 @@ def manual_compact(
     return context_compactor.manual_compact(session_id, llm_client)
 
 
+def check_context_overflow(session_id: str) -> Dict[str, Any]:
+    """检查上下文窗口是否超限"""
+    return context_compactor.check_context_overflow(session_id)
+
+
+def emergency_compact(
+    session_id: str,
+    llm_client: Any = None,
+    keep_messages: int = None
+) -> Dict[str, Any]:
+    """紧急压缩便捷函数"""
+    return context_compactor.emergency_compact(session_id, llm_client, keep_messages)
+
+
 # 导出
 __all__ = [
     'ContextCompactor',
@@ -611,6 +790,8 @@ __all__ = [
     'should_auto_compact',
     'auto_compact',
     'manual_compact',
+    'check_context_overflow',
+    'emergency_compact',
     'KEEP_RECENT_TOOL_RESULTS',
     'KEEP_RECENT_MESSAGES',
     'ENABLE_LONG_TERM_MEMORY',
