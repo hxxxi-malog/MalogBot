@@ -189,6 +189,57 @@ class FollowerAgent:
             # 重置状态
             self._status = "idle"
             self._current_task = None
+
+    def execute_claimed_task(self, claimed_task: SubTask) -> Dict[str, Any]:
+        """
+        执行一个已经由外部完成 claim 的任务。
+        用于确保 task_start/task_complete 的 task_id 与真实执行一致。
+        """
+        if not self.is_available():
+            return {
+                "success": False,
+                "task_id": claimed_task.id,
+                "error": "Follower is not available"
+            }
+
+        self._status = "busy"
+        self._current_task = claimed_task
+
+        try:
+            result = self._execute_task(claimed_task)
+
+            if result.get("success"):
+                self.task_board.complete_task(
+                    claimed_task.id,
+                    result.get("summary", ""),
+                    self.follower_id
+                )
+                self._completed_tasks.append(claimed_task.id)
+            else:
+                self.task_board.fail_task(
+                    claimed_task.id,
+                    result.get("error", "执行失败"),
+                    self.follower_id
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[Follower {self.follower_id}] 执行任务异常: {e}")
+            self.task_board.fail_task(
+                claimed_task.id,
+                str(e),
+                self.follower_id
+            )
+            return {
+                "success": False,
+                "task_id": claimed_task.id,
+                "error": str(e)
+            }
+
+        finally:
+            self._status = "idle"
+            self._current_task = None
     
     def _execute_task(self, task: SubTask) -> Dict[str, Any]:
         """
@@ -431,7 +482,7 @@ class FollowerPool:
         
         return results
     
-    def execute_parallel_stream(self) -> Generator[Dict[str, Any], None, None]:
+    def execute_parallel_stream(self, batch_id: Optional[str] = None) -> Generator[Dict[str, Any], None, None]:
         """
         流式并行执行就绪的任务
         
@@ -440,78 +491,91 @@ class FollowerPool:
         Yields:
             事件字典，包含 task_start 或 task_complete 类型
         """
-        import queue
-        
         # 获取就绪任务
         ready_tasks = self.task_board.get_ready_tasks()
         if not ready_tasks:
             return
-        
-        # 使用队列来收集结果
-        result_queue = queue.Queue()
-        future_follower_map = {}
-        
-        # 为每个就绪任务分配Follower
+
+        future_map: Dict[Future, Dict[str, Any]] = {}
+
+        # 先 claim 再 start，确保事件 task_id 与真实执行一致
         for task in ready_tasks[:self.max_followers]:
             follower = self.get_or_create_follower()
-            if follower:
-                # 发送任务开始事件
-                yield {
-                    "type": "task_start",
-                    "task_id": task.id,
-                    "description": task.description
-                }
-                
-                # 提交任务到线程池
-                future = self._executor.submit(follower.claim_and_execute)
-                future_follower_map[future] = follower
-        
+            if not follower:
+                continue
+
+            claimed_task = self.task_board.claim_task(task.id, follower.follower_id)
+            if not claimed_task:
+                continue
+
+            start_event: Dict[str, Any] = {
+                "type": "task_start",
+                "task_id": claimed_task.id,
+                "description": claimed_task.description
+            }
+            if batch_id is not None:
+                start_event["batch_id"] = batch_id
+            yield start_event
+
+            future = self._executor.submit(follower.execute_claimed_task, claimed_task)
+            future_map[future] = {
+                "follower": follower,
+                "task_id": claimed_task.id
+            }
+
         # 收集结果
-        for future, follower in future_follower_map.items():
+        for future, meta in future_map.items():
+            follower: FollowerAgent = meta["follower"]
+            task_id: str = meta["task_id"]
             try:
                 result = future.result(timeout=Config.SUB_AGENT_FORK_TIMEOUT)
                 if result:
-                    result_queue.put(result)
-                    yield {
+                    complete_event: Dict[str, Any] = {
                         "type": "task_complete",
                         "task_id": result.get("task_id"),
                         "success": result.get("success"),
                         "summary": result.get("summary", "")[:200]
                     }
+                    if batch_id is not None:
+                        complete_event["batch_id"] = batch_id
+                    yield complete_event
             except FuturesTimeoutError:
                 logger.error(f"[FollowerPool] Follower {follower.follower_id} 执行超时")
-                if follower._current_task:
-                    task_id = follower._current_task.id
-                    self.task_board.fail_task(
-                        task_id,
-                        f"任务执行超时（超过 {Config.SUB_AGENT_FORK_TIMEOUT} 秒）",
-                        follower.follower_id
-                    )
-                    follower._status = "idle"
-                    follower._current_task = None
-                    yield {
-                        "type": "task_complete",
-                        "task_id": task_id,
-                        "success": False,
-                        "summary": f"执行超时（{Config.SUB_AGENT_FORK_TIMEOUT}秒）"
-                    }
+                self.task_board.fail_task(
+                    task_id,
+                    f"任务执行超时（超过 {Config.SUB_AGENT_FORK_TIMEOUT} 秒）",
+                    follower.follower_id
+                )
+                follower._status = "idle"
+                follower._current_task = None
+                timeout_event: Dict[str, Any] = {
+                    "type": "task_complete",
+                    "task_id": task_id,
+                    "success": False,
+                    "summary": f"执行超时（{Config.SUB_AGENT_FORK_TIMEOUT}秒）"
+                }
+                if batch_id is not None:
+                    timeout_event["batch_id"] = batch_id
+                yield timeout_event
                 future.cancel()
             except Exception as e:
                 logger.error(f"[FollowerPool] 任务执行异常: {e}")
-                if follower._current_task:
-                    self.task_board.fail_task(
-                        follower._current_task.id,
-                        str(e),
-                        follower.follower_id
-                    )
-                    follower._status = "idle"
-                    follower._current_task = None
-                    yield {
-                        "type": "task_complete",
-                        "task_id": follower._current_task.id if follower._current_task else "unknown",
-                        "success": False,
-                        "summary": str(e)
-                    }
+                self.task_board.fail_task(
+                    task_id,
+                    str(e),
+                    follower.follower_id
+                )
+                follower._status = "idle"
+                follower._current_task = None
+                error_event: Dict[str, Any] = {
+                    "type": "task_complete",
+                    "task_id": task_id,
+                    "success": False,
+                    "summary": str(e)
+                }
+                if batch_id is not None:
+                    error_event["batch_id"] = batch_id
+                yield error_event
     
     def execute_sequential(self) -> List[Dict[str, Any]]:
         """

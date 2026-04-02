@@ -1562,7 +1562,8 @@ class AgentService:
                         "type": "team_progress",
                         "stage": "task_start",
                         "task_id": progress.get("task_id"),
-                        "description": progress.get("description")
+                        "description": progress.get("description"),
+                        "batch_id": progress.get("batch_id")
                     }
                 
                 elif progress_type == "task_complete":
@@ -1572,7 +1573,8 @@ class AgentService:
                         "stage": "task_complete",
                         "task_id": progress.get("task_id"),
                         "success": progress.get("success"),
-                        "summary": progress.get("summary")
+                        "summary": progress.get("summary"),
+                        "batch_id": progress.get("batch_id")
                     }
                 
                 elif progress_type == "group_complete":

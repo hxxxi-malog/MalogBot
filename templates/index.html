@@ -1888,15 +1888,21 @@
 
                 let assistantMessage = '';
                 let messageElement = null;
+                let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
+                    buffer += decoder.decode(value, { stream: true });
 
-                    for (const line of lines) {
+                    while (true) {
+                        const newlineIdx = buffer.indexOf('\n');
+                        if (newlineIdx === -1) break;
+
+                        const line = buffer.slice(0, newlineIdx);
+                        buffer = buffer.slice(newlineIdx + 1);
+
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
@@ -1959,6 +1965,26 @@
                                     if (messageElement && data.content) {
                                         updateMessage(messageElement, data.content);
                                     }
+                                    // 统一收尾：避免 UI 永久显示“执行中”
+                                    if (messageElement?._teamProgressContainer) {
+                                        const progressContainer = messageElement._teamProgressContainer;
+
+                                        const integratingDiv = progressContainer.querySelector('.team-integrating');
+                                        if (integratingDiv) integratingDiv.remove();
+
+                                        const runningTaskDivs = progressContainer.querySelectorAll('.team-task');
+                                        runningTaskDivs.forEach(taskDiv => {
+                                            const spinner = taskDiv.querySelector('.spinner-small');
+                                            if (spinner) {
+                                                const tid = taskDiv.dataset.taskId || 'unknown';
+                                                taskDiv.style.background = 'var(--gray-100)';
+                                                taskDiv.innerHTML = `
+                                                    <span style="color: var(--gray-500);">•</span>
+                                                    <span style="color: var(--gray-700); flex: 1;">${escapeHtml(tid)}（前端未收到完成事件，已在 done 时收尾）</span>
+                                                `;
+                                            }
+                                        });
+                                    }
 
                                 } else if (data.type === 'error') {
                                     typingIndicator.classList.remove('show');
@@ -2005,6 +2031,9 @@
                                     messageElement._teamProgressContainer = progressContainer;
                                     messageElement._completedTasks = 0;
                                     messageElement._totalTasks = 0;
+                                    // runtime batch -> group div 映射（用于动态归组展示）
+                                    messageElement._batchGroups = {};
+                                    messageElement._batchOrder = [];
                                 
                                 } else if (data.type === 'team_progress') {
                                     // 团队执行进度
@@ -2073,7 +2102,40 @@
                                         messageElement._currentGroup = groupDiv;
                                     
                                     } else if (stage === 'task_start') {
-                                        const groupTasks = messageElement._currentGroup?.querySelector('.group-tasks');
+                                        let targetGroup = null;
+                                        const batchId = data.batch_id;
+
+                                        if (batchId) {
+                                            targetGroup = messageElement._batchGroups?.[batchId] || null;
+                                            if (!targetGroup) {
+                                                // 新批次：创建一个动态并行批次容器
+                                                const idx = (messageElement._batchOrder?.length || 0) + 1;
+                                                if (messageElement._batchOrder) {
+                                                    messageElement._batchOrder.push(batchId);
+                                                }
+                                                const groupDiv = document.createElement('div');
+                                                groupDiv.className = 'team-group team-group-batch';
+                                                groupDiv.dataset.batchId = batchId;
+                                                groupDiv.style.cssText = 'margin-top: 12px; padding: 8px; background: white; border-radius: var(--radius-md); border: 1px solid var(--gray-200);';
+                                                groupDiv.innerHTML = `
+                                                    <div style="font-size: 12px; font-weight: 500; color: var(--gray-600); margin-bottom: 6px;">
+                                                        并行批次 ${idx} <span style="color: var(--gray-400); font-weight: normal;">(batch ${escapeHtml(String(batchId))})</span>
+                                                    </div>
+                                                    <div class="group-tasks" style="display: flex; flex-direction: column; gap: 4px;"></div>
+                                                `;
+                                                progressContainer.appendChild(groupDiv);
+                                                if (messageElement._batchGroups) {
+                                                    messageElement._batchGroups[batchId] = groupDiv;
+                                                }
+                                                targetGroup = groupDiv;
+                                            }
+                                        }
+
+                                        if (!targetGroup) {
+                                            targetGroup = messageElement._currentGroup || null;
+                                        }
+
+                                        const groupTasks = targetGroup?.querySelector('.group-tasks');
                                         if (groupTasks) {
                                             const taskDiv = document.createElement('div');
                                             taskDiv.className = 'team-task';
@@ -2148,7 +2210,9 @@
                                 }
 
                             } catch (e) {
-                                console.error('Parse error:', e);
+                                // 可能是 SSE 分片导致 JSON 不完整：把这行放回 buffer，等待后续数据补全
+                                buffer = line + '\n' + buffer;
+                                break;
                             }
                         }
                     }

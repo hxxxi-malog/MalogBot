@@ -123,6 +123,30 @@ INTEGRATION_SYSTEM_PROMPT = """你是一个结果整合专家，负责将多个�
 只输出JSON，不要输出其他内容。
 """
 
+INTEGRATION_MARKDOWN_SYSTEM_PROMPT = """你是一个结果整合专家，负责将多个子任务的执行结果整合为最终答复（面向用户阅读）。
+
+## 输出要求（Markdown）
+- 仅输出 Markdown（不要输出 JSON）
+- 结构清晰、信息密度高、避免冗长
+- 如果有失败/不确定之处，要明确标注
+
+## 建议结构
+## Summary
+- ...
+
+## Key findings
+- ...
+
+## Deliverables
+- ...
+
+## Recommendations
+- ...
+
+## Final answer
+（给用户的最终答复）
+"""
+
 
 class LeaderAgent:
     """
@@ -167,6 +191,7 @@ class LeaderAgent:
         self._current_plan: Optional[DAGPlan] = None
         self._execution_log: List[str] = []
         self._start_time: Optional[float] = None
+        self._runtime_batch_seq: int = 0
     
     def route(
         self,
@@ -473,7 +498,7 @@ class LeaderAgent:
 """
         
         messages = [
-            SystemMessage(content=INTEGRATION_SYSTEM_PROMPT),
+            SystemMessage(content=INTEGRATION_MARKDOWN_SYSTEM_PROMPT),
             HumanMessage(content=prompt)
         ]
         
@@ -494,6 +519,57 @@ class LeaderAgent:
                 f"- {r['description']}: {r['status']}"
                 for r in subtask_results.values()
             ])
+
+    def _llm_integrate_json(self, goal: str, subtask_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用 LLM 产出结构化整合结果（JSON）。
+        该结果用于统计/后续自动化，不直接面向用户渲染。
+        """
+        # 格式化子任务结果
+        results_text = ""
+        for task_id, result in subtask_results.items():
+            results_text += f"""
+任务 {task_id}: {result['description']}
+状态: {result['status']}
+结果: {str(result.get('result', '无'))[:500]}
+"""
+            if result.get('error'):
+                results_text += f"错误: {result['error']}\n"
+
+        prompt = f"""请整合以下子任务的执行结果。
+
+原始目标：
+{goal}
+
+子任务执行结果：
+{results_text}
+"""
+
+        messages = [
+            SystemMessage(content=INTEGRATION_SYSTEM_PROMPT),
+            HumanMessage(content=prompt)
+        ]
+
+        try:
+            response = self.llm.invoke(messages)
+            result_text = response.content or ""
+
+            json_start = result_text.find('{')
+            json_end = result_text.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = result_text[json_start:json_end]
+                return json.loads(json_str)
+        except Exception as e:
+            logger.warning(f"[Leader] JSON整合失败，返回降级结构: {e}")
+
+        return {
+            "overall_success": False,
+            "summary": "integration_json 生成失败（已降级）",
+            "key_findings": [],
+            "deliverables": [],
+            "recommendations": [],
+            "final_answer": ""
+        }
     
     def _llm_integrate(
         self,
@@ -652,6 +728,22 @@ class LeaderAgent:
                 task.status == TaskStatus.COMPLETED
                 for task in self._current_plan.subtasks.values()
             ) if self._current_plan else False
+
+            # 额外生成结构化 JSON 结果（不影响 Markdown 流式展示）
+            integration_json = {}
+            try:
+                subtask_results_json = {}
+                for task_id, task in self._current_plan.subtasks.items():
+                    subtask_results_json[task_id] = {
+                        "description": task.description,
+                        "status": task.status.value,
+                        "result": task.result,
+                        "error": task.error
+                    }
+                integration_json = self._llm_integrate_json(self._current_plan.goal, subtask_results_json)
+            except Exception as e:
+                logger.warning(f"[Leader] 生成 integration_json 失败: {e}")
+                integration_json = {"error": str(e)}
             
             # 发送完成信号
             yield {
@@ -665,6 +757,8 @@ class LeaderAgent:
                         1 for t in self._current_plan.subtasks.values()
                         if t.status == TaskStatus.COMPLETED
                     ) if self._current_plan else 0
+                    ,
+                    "integration_json": integration_json
                 }
             }
             
@@ -733,7 +827,9 @@ class LeaderAgent:
                     continue
                 
                 # 使用流式执行方法，实时发送事件
-                for event in self.follower_pool.execute_parallel_stream():
+                self._runtime_batch_seq += 1
+                batch_id = str(self._runtime_batch_seq)
+                for event in self.follower_pool.execute_parallel_stream(batch_id=batch_id):
                     yield event
             
             # 发送并行组完成信号
