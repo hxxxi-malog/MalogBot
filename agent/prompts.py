@@ -62,13 +62,16 @@ CORE_RULES = """你是一个智能助手，帮助用户完成各种任务。
 TOOL_CAPABILITY_INDEX = """
 ## 可用工具索引
 
+### 任务规划
+- `get_todo_status`：查看当前任务状态和进度
+- `complete_and_next`：完成当前任务并自动开始下一个任务
+
 ### 记忆管理
 - `store_memory`：存储用户信息到长期记忆（个人信息、偏好、决策、项目信息）
 - `store_memories_batch`：批量存储多条信息
 
 ### 任务管理（简单线性）
 - `todo_manager`：管理简单线性任务列表（无依赖关系）
-- `get_todo_status`：获取当前任务状态
 
 ### 任务管理（复杂依赖）
 - `task_create`：创建支持依赖关系的任务（DAG编排）
@@ -152,6 +155,16 @@ task_update(task_id=1, status="completed") → id=2 自动解锁
 - 无依赖 → todo_manager
 - 有依赖 → task_create + blocked_by
 - 不确定 → 先用 todo_manager，复杂时迁移
+
+### 任务状态更新规则（重要）
+
+1. **每次完成一个任务后，必须立即更新状态**
+   - 使用 `todo_manager` 或 `task_update` 更新
+   - 或使用 `complete_and_next` 自动完成当前任务并开始下一个
+
+2. **同一时间只能有一个 in_progress 任务**
+
+3. **超过3轮循环未更新任务状态，会收到强制提醒**
 """,
 
     "subagent": """
@@ -255,6 +268,12 @@ CONTEXT_TEMPLATES = {
 
     "todo_reminder": """
 ## 任务提醒
+
+{content}
+""",
+
+    "planning_prompt": """
+## 任务规划
 
 {content}
 """,
@@ -368,6 +387,7 @@ class PromptBuilder:
         knowledge_context: str = None,
         task_status: str = None,
         todo_reminder: str = None,
+        planning_prompt: str = None,
         available_tools: List[str] = None,
         max_tokens: int = None
     ) -> str:
@@ -381,6 +401,7 @@ class PromptBuilder:
             knowledge_context: 知识库上下文
             task_status: 任务状态
             todo_reminder: 任务提醒
+            planning_prompt: 规划提示词
             available_tools: 当前可用工具列表
             max_tokens: 最大 token 数
             
@@ -436,6 +457,9 @@ class PromptBuilder:
         
         if todo_reminder:
             prompt += CONTEXT_TEMPLATES["todo_reminder"].format(content=todo_reminder)
+        
+        if planning_prompt:
+            prompt += CONTEXT_TEMPLATES["planning_prompt"].format(content=planning_prompt)
         
         return prompt
     
@@ -525,6 +549,7 @@ def build_system_prompt(
     knowledge_context: str = None,
     task_status: str = None,
     todo_reminder: str = None,
+    planning_prompt: str = None,
     available_tools: List[str] = None
 ) -> str:
     """
@@ -537,6 +562,7 @@ def build_system_prompt(
         knowledge_context=knowledge_context,
         task_status=task_status,
         todo_reminder=todo_reminder,
+        planning_prompt=planning_prompt,
         available_tools=available_tools
     )
 

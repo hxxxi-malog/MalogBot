@@ -39,6 +39,7 @@ class ToolManager:
         from agent.tools.todo_manager import (
             todo_manager,
             get_todo_status,
+            complete_and_next,
         )
         
         # 基础工具（主Agent使用）
@@ -47,6 +48,7 @@ class ToolManager:
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            complete_and_next,
         ]
         
     def _init_sub_agent_tools(self):
@@ -61,6 +63,7 @@ class ToolManager:
         from agent.tools.todo_manager import (
             todo_manager,
             get_todo_status,
+            complete_and_next,
         )
         
         # 子Agent工具（不包含spawn_sub_agent，防止无限递归）
@@ -69,6 +72,7 @@ class ToolManager:
             get_bash_tool_detailed_usage,
             todo_manager,
             get_todo_status,
+            complete_and_next,
         ]
         
     def _init_skills_tools(self):

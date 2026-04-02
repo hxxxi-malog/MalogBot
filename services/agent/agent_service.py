@@ -21,7 +21,12 @@ from config import Config
 from agent.llm import get_llm
 from agent.prompts import build_system_prompt, get_system_prompt
 from agent.tools.bash import execute_confirmed_bash
-from agent.tools.todo_manager import get_todo_manager, remove_todo_manager
+from agent.tools.todo_manager import (
+    get_todo_manager, 
+    remove_todo_manager,
+    check_task_reminder,
+    record_task_activity
+)
 from agent.tools.task_manager import remove_task_manager
 from agent.tools.sub_agent import clear_session_tools
 from agent.tools.skills import SKILLS_TOOLS
@@ -82,6 +87,7 @@ class AgentService:
         chat_history: List[Dict],
         user_input: str,
         todo_reminder: str = "",
+        planning_prompt: str = "",
         session_id: str = None
     ) -> List:
         """
@@ -98,6 +104,7 @@ class AgentService:
             chat_history: 对话历史
             user_input: 当前用户输入
             todo_reminder: 任务提醒消息
+            planning_prompt: 规划提示词
             session_id: 会话ID
             
         Returns:
@@ -129,6 +136,7 @@ class AgentService:
             knowledge_context=knowledge_context,
             task_status=task_status,
             todo_reminder=todo_reminder if todo_reminder else None,
+            planning_prompt=planning_prompt if planning_prompt else None,
             available_tools=available_tools
         )
         
@@ -147,7 +155,6 @@ class AgentService:
                 tool_calls = msg.get("tool_calls")
                 if tool_calls:
                     # 转换 tool_calls 格式
-                    from langchain_core.messages import AIMessage
                     messages.append(AIMessage(content=content, tool_calls=tool_calls))
                 else:
                     messages.append(AIMessage(content=content))
@@ -255,6 +262,69 @@ class AgentService:
             logger.debug(f"[AgentService] 获取任务状态失败: {e}")
         
         return None
+    
+    def _get_planning_prompt(
+        self,
+        user_input: str,
+        chat_history: List[Dict],
+        session_id: str
+    ) -> str:
+        """
+        获取 Planning 提示词
+        
+        判断任务是否需要规划，如果需要则生成规划提示词
+        
+        Args:
+            user_input: 用户输入
+            chat_history: 对话历史
+            session_id: 会话ID
+            
+        Returns:
+            规划提示词，如果不需要则返回空字符串
+        """
+        try:
+            from agent.planning import PlanningService, get_session_plan, set_session_plan
+            
+            # 获取可用工具
+            available_tools = self._get_available_tool_names(session_id)
+            
+            # 创建规划服务
+            planning_service = PlanningService()
+            
+            # 分析任务复杂度
+            should_plan = planning_service.should_plan(
+                user_input, chat_history, available_tools
+            )
+            
+            if not should_plan:
+                return ""
+            
+            # 检查是否已有计划
+            existing_plan = get_session_plan(session_id)
+            if existing_plan and existing_plan.steps:
+                # 检查计划是否仍在执行中
+                pending_steps = [
+                    s for s in existing_plan.steps
+                    if s.status in ["pending", "in_progress"]
+                ]
+                if pending_steps:
+                    # 计划仍在执行中，返回提醒
+                    return planning_service.generate_plan_prompt(existing_plan)
+            
+            # 生成新计划
+            plan = planning_service.generate_plan(
+                user_input, chat_history, available_tools
+            )
+            
+            # 保存计划
+            set_session_plan(session_id, plan)
+            
+            # 返回规划提示词
+            return planning_service.generate_plan_prompt(plan)
+            
+        except Exception as e:
+            logger.warning(f"[AgentService] 获取规划提示词失败: {e}")
+            return ""
     
     def _build_messages_for_cancel(
         self,
@@ -399,8 +469,16 @@ class AgentService:
             todo_mgr = get_todo_manager(session_id)
             reminder = todo_mgr.get_reminder_message()
             
+            # 检查强制任务提醒
+            forced_reminder = check_task_reminder(session_id)
+            if forced_reminder:
+                reminder = forced_reminder
+            
+            # 检查是否需要 Planning
+            planning_prompt = self._get_planning_prompt(user_input, chat_history, session_id)
+            
             # 构建消息
-            messages = self._build_messages(chat_history, user_input, reminder, session_id)
+            messages = self._build_messages(chat_history, user_input, reminder, planning_prompt, session_id)
             
             # 应用微观压缩（压缩旧的工具调用结果）
             messages = self._apply_micro_compact(messages)
@@ -419,6 +497,10 @@ class AgentService:
             
             # 增加任务管理器轮次
             todo_mgr.increment_turn()
+            
+            # 再次检查是否需要强制提醒（用于下一轮）
+            if todo_mgr.should_remind():
+                logger.info(f"[AgentService] 会话 {session_id} 已 {todo_mgr._turns_since_last_update} 轮未更新任务状态")
             
             # 检查确认请求
             confirmation_info = stream_handler.extract_confirmation_info(output)
@@ -508,8 +590,16 @@ class AgentService:
             todo_mgr = get_todo_manager(session_id)
             reminder = todo_mgr.get_reminder_message()
             
+            # 检查强制任务提醒
+            forced_reminder = check_task_reminder(session_id)
+            if forced_reminder:
+                reminder = forced_reminder
+            
+            # 检查是否需要 Planning
+            planning_prompt = self._get_planning_prompt(user_input, chat_history, session_id)
+            
             # 构建消息
-            messages = self._build_messages(chat_history, user_input, reminder, session_id)
+            messages = self._build_messages(chat_history, user_input, reminder, planning_prompt, session_id)
             
             # 应用微观压缩（压缩旧的工具调用结果）
             messages = self._apply_micro_compact(messages)
@@ -597,6 +687,10 @@ class AgentService:
             
             # 增加任务管理器轮次
             todo_mgr.increment_turn()
+            
+            # 再次检查是否需要强制提醒（用于下一轮）
+            if todo_mgr.should_remind():
+                logger.info(f"[AgentService] 会话 {session_id} 已 {todo_mgr._turns_since_last_update} 轮未更新任务状态")
             
             # 发送完成信号
             yield {
