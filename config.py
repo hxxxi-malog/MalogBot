@@ -128,8 +128,8 @@ class Config:
     
     # 第三层：Summary - 当前上下文
     
-    # 微观压缩：保留最近的 N 个 tool_result
-    KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '5'))
+    # 微观压缩：保留最近的 N 个 tool_result（默认3个，更节省上下文）
+    KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '3'))
     
     # 压缩后保留的最近消息数
     KEEP_RECENT_MESSAGES = int(os.getenv('KEEP_RECENT_MESSAGES', '10'))

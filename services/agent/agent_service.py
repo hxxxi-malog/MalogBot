@@ -92,6 +92,8 @@ class AgentService:
         2. 场景指南（按需加载）
         3. 动态上下文（记忆、知识库、任务状态）
         
+        注意：工具调用结果会在 LLM 调用前通过 micro_compact 进行压缩。
+        
         Args:
             chat_history: 对话历史
             user_input: 当前用户输入
@@ -141,7 +143,14 @@ class AgentService:
             if role == "user":
                 messages.append(HumanMessage(content=content))
             elif role == "assistant":
-                messages.append(AIMessage(content=content))
+                # 处理包含 tool_calls 的 assistant 消息
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    # 转换 tool_calls 格式
+                    from langchain_core.messages import AIMessage
+                    messages.append(AIMessage(content=content, tool_calls=tool_calls))
+                else:
+                    messages.append(AIMessage(content=content))
             elif role == "system":
                 messages.append(SystemMessage(content=content))
         
@@ -149,6 +158,22 @@ class AgentService:
         messages.append(HumanMessage(content=user_input))
         
         return messages
+    
+    def _apply_micro_compact(self, messages: List) -> List:
+        """
+        应用微观压缩到消息列表
+        
+        将旧的工具调用结果压缩为简洁占位符，仅保留最近 N 次。
+        这在每次 LLM 调用前执行，防止工具结果堆积占用上下文。
+        
+        Args:
+            messages: LangChain 消息列表
+            
+        Returns:
+            压缩后的消息列表
+        """
+        from services.context.context_compactor import micro_compact
+        return micro_compact(messages)
     
     def _get_available_tool_names(self, session_id: str) -> List[str]:
         """
@@ -377,6 +402,9 @@ class AgentService:
             # 构建消息
             messages = self._build_messages(chat_history, user_input, reminder, session_id)
             
+            # 应用微观压缩（压缩旧的工具调用结果）
+            messages = self._apply_micro_compact(messages)
+            
             # 获取Agent
             agent = self._get_agent_for_session(session_id)
             
@@ -482,6 +510,9 @@ class AgentService:
             
             # 构建消息
             messages = self._build_messages(chat_history, user_input, reminder, session_id)
+            
+            # 应用微观压缩（压缩旧的工具调用结果）
+            messages = self._apply_micro_compact(messages)
             
             # 获取Agent
             agent = self._get_agent_for_session(session_id)
@@ -625,6 +656,10 @@ class AgentService:
                 exec_context = f"上一步命令已执行成功。\n执行的命令: {command}\n执行结果: {result}\n\n请继续完成用户的原始请求。"
                 
                 messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
+                
+                # 应用微观压缩
+                messages = self._apply_micro_compact(messages)
+                
                 agent = self._get_agent_for_session(session_id)
                 agent_result = agent.invoke({"messages": messages})
                 output = stream_handler.extract_ai_message(agent_result)
@@ -701,6 +736,10 @@ class AgentService:
                 
                 full_response = ""
                 messages = self._build_messages_for_cancel(chat_history, exec_context, session_id)
+                
+                # 应用微观压缩
+                messages = self._apply_micro_compact(messages)
+                
                 agent = self._get_agent_for_session(session_id)
                 
                 for chunk in agent.stream(
@@ -771,6 +810,10 @@ class AgentService:
                 cancel_context = f"用户取消了之前请求执行的命令。\n取消的命令: {command}\n\n请根据这个情况，给用户提供其他建议或替代方案。"
                 
                 messages = self._build_messages_for_cancel(chat_history, cancel_context, session_id)
+                
+                # 应用微观压缩
+                messages = self._apply_micro_compact(messages)
+                
                 full_response = ""
                 
                 agent = self._get_agent_for_session(session_id)
@@ -843,7 +886,10 @@ class AgentService:
             messages = self._build_messages_for_cancel(chat_history, continue_context, session_id)
             if reminder:
                 messages.insert(1, SystemMessage(content=reminder))
-                
+            
+            # 应用微观压缩
+            messages = self._apply_micro_compact(messages)
+            
             agent = self._get_agent_for_session(session_id)
             
             result = agent.invoke(
@@ -929,7 +975,10 @@ class AgentService:
             messages = self._build_messages_for_cancel(chat_history, continue_context, session_id)
             if reminder:
                 messages.insert(1, SystemMessage(content=reminder))
-                
+            
+            # 应用微观压缩
+            messages = self._apply_micro_compact(messages)
+            
             agent = self._get_agent_for_session(session_id)
             
             full_response = ""

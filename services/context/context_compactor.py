@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== 配置常量 ====================
 
-# 微观压缩：保留最近的 N 个 tool_result
-KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '5'))
+# 微观压缩：保留最近的 N 个 tool_result（默认3个，更节省上下文）
+KEEP_RECENT_TOOL_RESULTS = int(os.getenv('KEEP_RECENT_TOOL_RESULTS', '3'))
 
 # 压缩后保留的最近消息数
 KEEP_RECENT_MESSAGES = int(os.getenv('KEEP_RECENT_MESSAGES', '10'))
@@ -124,9 +124,11 @@ class ContextCompactor:
     
     def micro_compact(self, messages: List) -> List:
         """
-        微观压缩：将旧的 tool result 替换为占位符
+        微观压缩：将旧的 tool result 替换为简洁占位符
         
         在每次 LLM 调用前执行，减少 tool_result 占用的上下文空间。
+        格式：[tool: tool_name] - 简洁明了，只保留工具名称。
+        
         注意：这只是临时压缩，原始数据仍保留在Journal中。
         
         Args:
@@ -138,61 +140,113 @@ class ContextCompactor:
         if not messages:
             return messages
         
-        # 收集所有 tool_result 位置
+        import re
+        
+        # 收集所有 tool_result 位置及其工具名称
         tool_results = []
         
         for i, msg in enumerate(messages):
             # 处理 ToolMessage 类型
             if isinstance(msg, ToolMessage):
-                tool_results.append((i, msg))
+                tool_name = self._extract_tool_name(msg, messages, i)
+                tool_results.append((i, msg, tool_name))
             # 处理包含 tool_result 的消息（兼容多种格式）
             elif hasattr(msg, 'content') and isinstance(msg.content, list):
                 for j, part in enumerate(msg.content):
                     if isinstance(part, dict) and part.get('type') == 'tool_result':
-                        tool_results.append((i, msg, j, part))
+                        tool_name = part.get('name', 'unknown')
+                        tool_results.append((i, msg, j, part, tool_name))
         
         if len(tool_results) <= self.keep_recent_tools:
             return messages
         
-        # 创建消息的深拷贝（避免修改原始消息）
+        # 创建消息的副本（避免修改原始消息）
         result_messages = list(messages)
         
-        # 旧结果替换为占位符
+        # 旧结果替换为简洁占位符
         old_results = tool_results[:-self.keep_recent_tools]
         
         for item in old_results:
-            if len(item) == 2:
-                # ToolMessage 类型
-                i, msg = item
-                tool_name = getattr(msg, 'name', None)
-                if not tool_name:
-                    content_str = str(msg.content)
-                    if 'tool_name:' in content_str.lower():
-                        import re
-                        match = re.search(r'tool_name[:\s]+(\w+)', content_str, re.IGNORECASE)
-                        if match:
-                            tool_name = match.group(1)
-                if not tool_name:
-                    tool_name = 'tool'
+            if len(item) == 3:
+                # ToolMessage 类型 (i, msg, tool_name)
+                i, msg, tool_name = item
                 tool_call_id = getattr(msg, 'tool_call_id', None)
-                placeholder = self._create_tool_placeholder(tool_name, msg.content, tool_call_id)
+                placeholder = self._create_tool_placeholder(tool_name, tool_call_id)
                 result_messages[i] = placeholder
-            elif len(item) == 4:
-                # 嵌套在 content 中的 tool_result
-                i, msg, j, part = item
-                tool_name = part.get('name', 'unknown')
-                part['content'] = f"[Previous: used {tool_name}]"
+            elif len(item) == 5:
+                # 嵌套在 content 中的 tool_result (i, msg, j, part, tool_name)
+                i, msg, j, part, tool_name = item
+                part['content'] = f"[tool: {tool_name}]"
         
-        logger.info(f"[micro_compact] 压缩了 {len(old_results)} 个旧的 tool_result")
+        logger.info(f"[micro_compact] 压缩了 {len(old_results)} 个旧的 tool_result，保留最近 {self.keep_recent_tools} 个")
         return result_messages
     
-    def _create_tool_placeholder(self, tool_name: str, original_content: Any, tool_call_id: str = None) -> ToolMessage:
-        """创建工具调用占位符"""
-        content_preview = ""
-        if isinstance(original_content, str) and len(original_content) > 100:
-            content_preview = f" (内容长度: {len(original_content)} 字符)"
+    def _extract_tool_name(self, tool_msg: ToolMessage, messages: List, current_index: int) -> str:
+        """
+        从 ToolMessage 中提取工具名称
         
-        placeholder_content = f"[压缩的工具调用: {tool_name}]{content_preview}"
+        优先级：
+        1. ToolMessage.name 属性
+        2. 从前面的 AIMessage 中查找对应的 tool_calls
+        3. 从 content 中解析
+        
+        Args:
+            tool_msg: ToolMessage 实例
+            messages: 消息列表
+            current_index: 当前消息索引
+            
+        Returns:
+            工具名称
+        """
+        import re
+        
+        # 1. 检查 ToolMessage.name 属性
+        tool_name = getattr(tool_msg, 'name', None)
+        if tool_name:
+            return tool_name
+        
+        # 2. 从前面的 AIMessage 中查找对应的 tool_calls
+        tool_call_id = getattr(tool_msg, 'tool_call_id', None)
+        if tool_call_id:
+            # 向前搜索 AIMessage
+            for j in range(current_index - 1, max(-1, current_index - 10), -1):
+                prev_msg = messages[j]
+                if isinstance(prev_msg, AIMessage) and hasattr(prev_msg, 'tool_calls'):
+                    for tc in (prev_msg.tool_calls or []):
+                        if tc.get('id') == tool_call_id:
+                            return tc.get('name', 'tool')
+        
+        # 3. 从 content 中解析
+        content_str = str(tool_msg.content)
+        
+        # 尝试匹配常见模式
+        patterns = [
+            r'tool_name[:\s]+([\w_]+)',
+            r'工具[：:]\s*([\w_]+)',
+            r'\[([\w_]+)\]',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, content_str, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        
+        return 'tool'
+    
+    def _create_tool_placeholder(self, tool_name: str, tool_call_id: str = None) -> ToolMessage:
+        """
+        创建简洁的工具调用占位符
+        
+        格式：[tool: tool_name]
+        这种简洁格式让模型知道曾经调用过什么工具，但不占用过多上下文。
+        
+        Args:
+            tool_name: 工具名称
+            tool_call_id: 工具调用ID
+            
+        Returns:
+            ToolMessage 占位符
+        """
+        placeholder_content = f"[tool: {tool_name}]"
         return ToolMessage(content=placeholder_content, tool_call_id=tool_call_id or "compressed")
     
     # ==================== 第二层：自动压缩（核心） ====================
