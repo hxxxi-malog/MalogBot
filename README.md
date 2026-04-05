@@ -475,7 +475,7 @@ python -m pytest tests/
 
 ```
 ┌─────────────────────────────────────────────┐
-│                   LLM                        │
+│                   LLM                       │
 └─────────────────────────────────────────────┘
                       │
                       ▼
@@ -502,6 +502,6 @@ MIT License
 
 ## 联系方式
 
-项目主页：GitHub
+项目主页：[GitHub](https://github.com/hxxxi-malog/MalogBot/)
 
-问题反馈：Issues
+问题反馈：[Issues](https://github.com/hxxxi-malog/MalogBot/issues)
