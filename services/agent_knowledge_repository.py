@@ -571,9 +571,261 @@ class UserProfileRepository(BaseRepository):
         return result
 
 
+class KnowledgeItemRepositoryEnhanced(KnowledgeItemRepository):
+    """增强版知识条目 Repository
+    
+    提供分层召回策略和批量操作
+    """
+    
+    def __init__(self):
+        super().__init__()
+    
+    def search_with_tag_filter(
+        self,
+        session: DBSession,
+        query_embedding: List[float],
+        tags: List[str],
+        match_all_tags: bool = False,
+        top_k: int = 10
+    ) -> List[Dict]:
+        """
+        分层召回：先标签过滤，再向量检索
+        
+        这是文档中提到的分层召回策略：
+        1. 低维标签过滤缩小候选集
+        2. 在过滤结果上进行向量检索
+        
+        Args:
+            session: 数据库会话
+            query_embedding: 查询向量
+            tags: 标签列表
+            match_all_tags: True表示必须匹配所有标签，False表示匹配任一标签
+            top_k: 返回数量
+            
+        Returns:
+            检索结果列表
+        """
+        logger.info(f"分层召回: tags={tags}, match_all={match_all_tags}, top_k={top_k}")
+        
+        # 构建标签条件
+        array_expr = "ARRAY[" + ",".join(f"'{tag}'" for tag in tags) + "]"
+        tag_op = "@>" if match_all_tags else "&&"
+        
+        # 转换向量为PostgreSQL格式
+        vec_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+        
+        # SQL：先标签过滤，再向量检索
+        sql = text(f"""
+            SELECT id, content, item_type, source_file_type, importance, 
+                   tags, created_at, last_accessed_at, access_count,
+                   1 - (embedding <=> '{vec_str}'::vector) as similarity
+            FROM knowledge_items
+            WHERE embedding IS NOT NULL
+              AND is_expired = FALSE
+              AND tags {tag_op} {array_expr}
+            ORDER BY embedding <=> '{vec_str}'::vector
+            LIMIT {top_k}
+        """)
+        
+        result = session.execute(sql)
+        
+        results = []
+        for row in result:
+            results.append({
+                'id': row.id,
+                'content': row.content,
+                'item_type': row.item_type,
+                'source_file_type': row.source_file_type,
+                'importance': row.importance,
+                'tags': row.tags or [],
+                'created_at': row.created_at,
+                'last_accessed_at': row.last_accessed_at,
+                'access_count': row.access_count or 0,
+                'similarity': float(row.similarity)
+            })
+        
+        logger.info(f"分层召回返回 {len(results)} 条结果")
+        return results
+    
+    def search_with_filters(
+        self,
+        session: DBSession,
+        query_embedding: List[float],
+        item_types: List[str] = None,
+        tags: List[str] = None,
+        min_importance: float = None,
+        source_file_type: str = None,
+        exclude_expired: bool = True,
+        top_k: int = 10
+    ) -> List[Dict]:
+        """
+        支持多过滤条件的向量检索
+        
+        Args:
+            session: 数据库会话
+            query_embedding: 查询向量
+            item_types: 条目类型列表
+            tags: 标签列表
+            min_importance: 最小重要性
+            source_file_type: 来源文件类型
+            exclude_expired: 是否排除过期记忆
+            top_k: 返回数量
+            
+        Returns:
+            检索结果列表
+        """
+        logger.info(f"多条件检索: types={item_types}, tags={tags}, top_k={top_k}")
+        
+        # 构建WHERE条件
+        where_clauses = ["embedding IS NOT NULL"]
+        
+        if exclude_expired:
+            where_clauses.append("is_expired = FALSE")
+        
+        if item_types:
+            types_str = "','".join(item_types)
+            where_clauses.append(f"item_type IN ('{types_str}')")
+        
+        if tags:
+            tags_str = "','".join(tags)
+            where_clauses.append(f"tags && ARRAY['{tags_str}']")
+        
+        if min_importance is not None:
+            where_clauses.append(f"importance >= {min_importance}")
+        
+        if source_file_type:
+            where_clauses.append(f"source_file_type = '{source_file_type}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        # 转换向量
+        vec_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+        
+        sql = text(f"""
+            SELECT id, content, item_type, source_file_type, importance, 
+                   tags, created_at, last_accessed_at, access_count,
+                   1 - (embedding <=> '{vec_str}'::vector) as similarity
+            FROM knowledge_items
+            WHERE {where_clause}
+            ORDER BY embedding <=> '{vec_str}'::vector
+            LIMIT {top_k}
+        """)
+        
+        result = session.execute(sql)
+        
+        results = []
+        for row in result:
+            results.append({
+                'id': row.id,
+                'content': row.content,
+                'item_type': row.item_type,
+                'source_file_type': row.source_file_type,
+                'importance': row.importance,
+                'tags': row.tags or [],
+                'created_at': row.created_at,
+                'last_accessed_at': row.last_accessed_at,
+                'access_count': row.access_count or 0,
+                'similarity': float(row.similarity)
+            })
+        
+        logger.info(f"多条件检索返回 {len(results)} 条结果")
+        return results
+    
+    def batch_update_access(
+        self,
+        session: DBSession,
+        ids: List[int]
+    ) -> int:
+        """
+        批量更新访问记录（LRU刷新）
+        
+        Args:
+            session: 数据库会话
+            ids: 记录ID列表
+            
+        Returns:
+            更新的记录数
+        """
+        if not ids:
+            return 0
+        
+        logger.info(f"批量刷新访问记录: {len(ids)} 条")
+        
+        try:
+            result = session.execute(text("""
+                UPDATE knowledge_items
+                SET last_accessed_at = NOW(),
+                    access_count = access_count + 1
+                WHERE id = ANY(:ids)
+            """), {'ids': ids})
+            
+            session.flush()
+            return result.rowcount
+        except Exception as e:
+            logger.error(f"批量刷新失败: {e}")
+            return 0
+    
+    def get_by_importance(
+        self,
+        session: DBSession,
+        min_importance: float = 0.5,
+        item_type: str = None,
+        limit: int = 100
+    ) -> List[KnowledgeItem]:
+        """
+        按重要性获取记忆
+        
+        Args:
+            session: 数据库会话
+            min_importance: 最小重要性
+            item_type: 条目类型（可选）
+            limit: 返回数量
+        """
+        logger.info(f"按重要性查询: min={min_importance}, type={item_type}")
+        
+        query = session.query(KnowledgeItem).filter(
+            KnowledgeItem.importance >= min_importance,
+            KnowledgeItem.is_expired == False
+        )
+        
+        if item_type:
+            query = query.filter(KnowledgeItem.item_type == item_type)
+        
+        return query.order_by(
+            KnowledgeItem.importance.desc()
+        ).limit(limit).all()
+    
+    def get_recently_accessed(
+        self,
+        session: DBSession,
+        days: int = 30,
+        limit: int = 100
+    ) -> List[KnowledgeItem]:
+        """
+        获取最近访问的记忆
+        
+        Args:
+            session: 数据库会话
+            days: 最近多少天
+            limit: 返回数量
+        """
+        logger.info(f"获取最近访问: days={days}")
+        
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=days)
+        
+        return session.query(KnowledgeItem).filter(
+            KnowledgeItem.last_accessed_at >= cutoff,
+            KnowledgeItem.is_expired == False
+        ).order_by(
+            KnowledgeItem.last_accessed_at.desc()
+        ).limit(limit).all()
+
+
 # 创建全局实例
 knowledge_file_repo = KnowledgeFileRepository()
 knowledge_item_repo = KnowledgeItemRepository()
+knowledge_item_repo_enhanced = KnowledgeItemRepositoryEnhanced()
 agent_mistake_repo = AgentMistakeRepository()
 agent_rule_repo = AgentRuleRepository()
 user_profile_repo = UserProfileRepository()
@@ -584,11 +836,13 @@ __all__ = [
     'BaseRepository',
     'KnowledgeFileRepository',
     'KnowledgeItemRepository',
+    'KnowledgeItemRepositoryEnhanced',
     'AgentMistakeRepository',
     'AgentRuleRepository',
     'UserProfileRepository',
     'knowledge_file_repo',
     'knowledge_item_repo',
+    'knowledge_item_repo_enhanced',
     'agent_mistake_repo',
     'agent_rule_repo',
     'user_profile_repo'
