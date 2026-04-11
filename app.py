@@ -264,11 +264,12 @@ def chat():
     处理聊天请求（非流式）
     
     返回：
-    - type: "response" | "confirmation_required" | "error"
+    - type: "response" | "confirmation_required" | "onboarding_required" | "error"
     - output: 助手回复（正常情况）
     - command: 需要确认的命令
     - operation: 操作类型
     - working_dir: 执行路径
+    - message: 引导消息（onboarding_required 时）
     """
     try:
         data = request.json
@@ -295,6 +296,14 @@ def chat():
                 'message': result.get('message', '需要用户确认'),
                 'session_id': result['session_id']
             })
+        
+        # 首次对话引导
+        if result['type'] == 'onboarding_required':
+            return jsonify({
+                'type': 'onboarding_required',
+                'message': result['message'],
+                'session_id': result['session_id']
+            })
 
         return jsonify(result)
 
@@ -302,6 +311,40 @@ def chat():
         return jsonify({
             'type': 'error',
             'output': f'服务器错误: {str(e)}'
+        }), 500
+
+
+@app.route('/onboarding/reply', methods=['POST'])
+def onboarding_reply():
+    """
+    处理首次对话引导的用户回复
+    
+    请求体：
+    - message: 用户回复内容
+    
+    返回：
+    - type: "response"
+    - output: 确认消息
+    - onboarding_completed: true
+    """
+    try:
+        data = request.json
+        user_reply = data.get('message', '')
+        
+        if not user_reply:
+            return jsonify({'error': '回复不能为空'}), 400
+        
+        session_id = get_session_id()
+        
+        # 处理引导回复
+        result = chat_service.handle_onboarding_reply(user_reply, session_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({
+            'type': 'error',
+            'output': f'处理引导回复失败: {str(e)}'
         }), 500
 
 

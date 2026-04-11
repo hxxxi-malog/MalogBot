@@ -176,6 +176,26 @@ class ChatService:
         """
         yield from self._agent_service.confirm_command_stream(command, session_id, user_message)
     
+    def handle_onboarding_reply(
+        self,
+        user_reply: str,
+        session_id: str = "default"
+    ) -> Dict[str, Any]:
+        """
+        处理首次对话引导的用户回复
+        
+        当前端收到 ONBOARDING_REQUIRED 响应后，
+        用户回复应调用此方法处理，而不是 chat。
+        
+        Args:
+            user_reply: 用户的回复（包含名字和角色期望）
+            session_id: 会话ID
+            
+        Returns:
+            响应字典
+        """
+        return self._agent_service.handle_onboarding_reply(user_reply, session_id)
+    
     def cancel_command_stream(
         self,
         command: str,

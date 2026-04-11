@@ -36,6 +36,8 @@ from services.core.types import ChatResponse, ChatResponseType
 from services.agent.stream_handler import stream_handler, CONFIRMATION_REQUIRED_MARKER
 from services.agent.tool_manager import tool_manager
 from services.context.context_compactor import check_context_overflow, emergency_compact
+from services.onboarding_service import onboarding_service
+from services.db_manager import db_manager
 
 # 导入团队模式
 from agent.team import (
@@ -483,6 +485,17 @@ class AgentService:
         Returns:
             响应字典
         """
+        # ========== 首次对话引导检测 ==========
+        with db_manager.get_session() as db_session:
+            if onboarding_service.need_onboarding(db_session):
+                logger.info(f"[AgentService] 检测到首次对话，触发引导流程")
+                greeting = onboarding_service.get_greeting()
+                return {
+                    "type": ChatResponseType.ONBOARDING_REQUIRED.value,
+                    "message": greeting,
+                    "session_id": session_id
+                }
+        
         # 检查上下文窗口是否超限
         overflow_info = check_context_overflow(session_id)
         if overflow_info["is_overflow"]:
@@ -604,6 +617,70 @@ class AgentService:
                 "session_id": session_id
             }
     
+    def handle_onboarding_reply(self, user_reply: str, session_id: str) -> Dict[str, Any]:
+        """
+        处理首次对话引导的用户回复
+        
+        Args:
+            user_reply: 用户的回复（包含名字和角色期望）
+            session_id: 会话ID
+            
+        Returns:
+            响应字典
+        """
+        logger.info(f"[AgentService] 处理首次对话引导回复: {user_reply[:50]}...")
+        
+        with db_manager.get_session() as db_session:
+            # 使用 LLM 提取信息并完成引导
+            result = onboarding_service.complete_onboarding_from_reply(
+                db_session,
+                user_reply,
+                self.llm  # 传入 LLM 客户端
+            )
+            
+            if result.get('success'):
+                # 生成确认消息
+                user_name = result.get('user_name', '朋友')
+                agent_role = result.get('agent_role', '智能助手')
+                
+                confirmation = onboarding_service.get_confirmation_message(
+                    user_name, agent_role
+                )
+                
+                # 保存对话历史（引导问候 + 用户回复 + 确认）
+                greeting = onboarding_service.get_greeting()
+                self.session_store.add_message(session_id, "assistant", greeting)
+                self.session_store.add_message(session_id, "user", user_reply)
+                self.session_store.add_message(session_id, "assistant", confirmation)
+                
+                return {
+                    "type": ChatResponseType.RESPONSE.value,
+                    "output": confirmation,
+                    "session_id": session_id,
+                    "onboarding_completed": True
+                }
+            elif result.get('need_retry'):
+                # 提取无效，需要用户重新回答
+                # 保存用户的无效回复，然后返回重试消息
+                self.session_store.add_message(session_id, "user", user_reply)
+                
+                retry_message = result.get('message', '抱歉，我没有理解。请告诉我您的称呼和希望我扮演的角色。')
+                self.session_store.add_message(session_id, "assistant", retry_message)
+                
+                return {
+                    "type": ChatResponseType.ONBOARDING_REQUIRED.value,
+                    "message": retry_message,
+                    "session_id": session_id,
+                    "need_retry": True
+                }
+            else:
+                # 其他错误
+                return {
+                    "type": ChatResponseType.ERROR.value,
+                    "output": f"引导设置失败: {result.get('error', '未知错误')}",
+                    "session_id": session_id
+                }
+    
     def chat_stream(
         self,
         user_input: str,
@@ -621,6 +698,18 @@ class AgentService:
         """
         # 清除取消标志
         self.clear_cancel_flag(session_id)
+        
+        # ========== 首次对话引导检测 ==========
+        with db_manager.get_session() as db_session:
+            if onboarding_service.need_onboarding(db_session):
+                logger.info(f"[AgentService] 检测到首次对话，触发引导流程")
+                greeting = onboarding_service.get_greeting()
+                yield {
+                    "type": ChatResponseType.ONBOARDING_REQUIRED.value,
+                    "message": greeting,
+                    "session_id": session_id
+                }
+                return
         
         # 检查上下文窗口是否超限
         overflow_info = check_context_overflow(session_id)
@@ -1402,9 +1491,10 @@ class AgentService:
         带路由的对话执行（非流式）
         
         自动判断是否需要团队模式：
-        1. 意图识别与路由
-        2. 简单任务 -> 单Agent执行
-        3. 复杂任务 -> 团队模式执行
+        1. 首次对话引导检测（最高优先级）
+        2. 意图识别与路由
+        3. 简单任务 -> 单Agent执行
+        4. 复杂任务 -> 团队模式执行
         
         Args:
             user_input: 用户输入
@@ -1413,6 +1503,17 @@ class AgentService:
         Returns:
             响应字典
         """
+        # ========== 首次对话引导检测（最高优先级） ==========
+        with db_manager.get_session() as db_session:
+            if onboarding_service.need_onboarding(db_session):
+                logger.info(f"[AgentService] 检测到首次对话，触发引导流程")
+                greeting = onboarding_service.get_greeting()
+                return {
+                    "type": ChatResponseType.ONBOARDING_REQUIRED.value,
+                    "message": greeting,
+                    "session_id": session_id
+                }
+        
         if not self.TEAM_MODE_ENABLED:
             # 团队模式未启用，走原有流程
             return self.chat(user_input, session_id)
@@ -1475,9 +1576,10 @@ class AgentService:
         带路由的流式对话执行
         
         自动判断是否需要团队模式：
-        1. 意图识别与路由
-        2. 简单任务 -> 单Agent流式执行
-        3. 复杂任务 -> 团队模式执行（实时推送进度）
+        1. 首次对话引导检测（最高优先级）
+        2. 意图识别与路由
+        3. 简单任务 -> 单Agent流式执行
+        4. 复杂任务 -> 团队模式执行（实时推送进度）
         
         Args:
             user_input: 用户输入
@@ -1486,6 +1588,18 @@ class AgentService:
         Yields:
             流式数据字典
         """
+        # ========== 首次对话引导检测（最高优先级） ==========
+        with db_manager.get_session() as db_session:
+            if onboarding_service.need_onboarding(db_session):
+                logger.info(f"[AgentService] 检测到首次对话，触发引导流程")
+                greeting = onboarding_service.get_greeting()
+                yield {
+                    "type": ChatResponseType.ONBOARDING_REQUIRED.value,
+                    "message": greeting,
+                    "session_id": session_id
+                }
+                return
+        
         if not self.TEAM_MODE_ENABLED:
             # 团队模式未启用，走原有流程
             yield from self.chat_stream(user_input, session_id)
