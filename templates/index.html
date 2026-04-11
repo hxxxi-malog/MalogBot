@@ -1838,6 +1838,61 @@
             // 保存原始用户消息，用于后续确认
             currentOriginalUserMessage = content;
 
+            // ========== 首次对话引导模式处理 ==========
+            if (window._onboardingMode) {
+                // 清除引导模式标记
+                window._onboardingMode = false;
+                
+                // 显示用户消息
+                addMessage(content, 'user', false);
+                messageInput.value = '';
+                sendButton.disabled = true;
+                typingIndicator.classList.add('show');
+                
+                try {
+                    // 调用引导回复接口
+                    const response = await fetch('/onboarding/reply', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ message: content })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    typingIndicator.classList.remove('show');
+                    sendButton.disabled = false;
+                    
+                    if (data.type === 'response') {
+                        // 引导完成，显示确认消息
+                        addMessage(data.output, 'assistant');
+                        // 清除引导模式标记
+                        window._onboardingMode = false;
+                    } else if (data.type === 'onboarding_required' && data.need_retry) {
+                        // 提取无效，需要用户重新回答
+                        addMessage(data.message, 'assistant');
+                        // 保持引导模式，让用户重新回答
+                        window._onboardingMode = true;
+                    } else if (data.type === 'error') {
+                        addMessage('❌ 错误: ' + data.output, 'assistant');
+                        // 清除引导模式标记
+                        window._onboardingMode = false;
+                    }
+                    
+                    // 刷新会话列表
+                    loadSessions();
+                    
+                } catch (error) {
+                    console.error('Onboarding reply error:', error);
+                    typingIndicator.classList.remove('show');
+                    sendButton.disabled = false;
+                    addMessage('发生错误，请重试', 'assistant');
+                }
+                
+                return;
+            }
+
             // 如果是新会话，先创建会话
             if (isNewSession || !currentSessionId) {
                 await createNewSession(false);
@@ -1981,6 +2036,24 @@
                                     typingIndicator.classList.remove('show');
                                     addMessage(data.content, 'assistant');
                                 
+                                // ========== 首次对话引导处理 ==========
+                                } else if (data.type === 'onboarding_required') {
+                                    // 需要首次对话引导
+                                    typingIndicator.classList.remove('show');
+                                    
+                                    if (!messageElement) {
+                                        messageElement = addMessage('', 'assistant');
+                                    }
+                                    
+                                    // 显示引导消息
+                                    updateMessage(messageElement, data.message);
+                                    hideStopButton();
+                                    sendButton.disabled = false;
+                                    
+                                    // 标记当前处于引导模式
+                                    window._onboardingMode = true;
+                                    return;
+
                                 // ========== 团队模式进度处理（轮询方案） ==========
                                 } else if (data.type === 'team_mode_start') {
                                     // 团队模式开始 - 初始化UI并启动轮询
