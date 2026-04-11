@@ -9,6 +9,7 @@ from sqlalchemy import Column, String, Text, DateTime, Integer, Index, ForeignKe
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 
 Base = declarative_base()
 
@@ -23,6 +24,10 @@ class Session(Base):
     web_search_enabled = Column(Boolean, default=False, nullable=False)  # 是否启用联网搜索
     knowledge_base_id = Column(String(100), nullable=True)  # 当前选中的知识库ID，None表示不使用知识库
     
+    # 首次对话引导相关字段
+    onboarding_completed = Column(Boolean, default=False, nullable=False)  # 是否完成引导
+    onboarding_data = Column(JSONB, default=dict)  # 引导数据（JSON格式）
+    
     # 关系
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
     
@@ -33,7 +38,9 @@ class Session(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'web_search_enabled': self.web_search_enabled if self.web_search_enabled is not None else False,
-            'knowledge_base_id': self.knowledge_base_id
+            'knowledge_base_id': self.knowledge_base_id,
+            'onboarding_completed': self.onboarding_completed if self.onboarding_completed is not None else False,
+            'onboarding_data': self.onboarding_data if self.onboarding_data else {}
         }
 
 
