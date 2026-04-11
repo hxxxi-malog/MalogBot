@@ -22,6 +22,7 @@ class ChatResponseType(str, Enum):
     CONFIRMATION_REQUIRED = "confirmation_required"
     RECURSION_LIMIT_REACHED = "recursion_limit_reached"  # 保留向后兼容
     CONTEXT_LIMIT_REACHED = "context_limit_reached"  # 新增：上下文窗口超限
+    ONBOARDING_REQUIRED = "onboarding_required"  # 新增：首次对话引导
     ERROR = "error"
     CANCELLED = "cancelled"
     DONE = "done"
