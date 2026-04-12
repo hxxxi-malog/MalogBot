@@ -926,5 +926,120 @@ def get_task_board():
         }), 500
 
 
+# ==================== 监控指标 API ====================
+
+@app.route('/monitoring/bootstrap', methods=['GET'])
+def get_bootstrap_metrics():
+    """
+    获取 Bootstrap 加载指标
+    
+    查询参数：
+    - hours: 统计时间窗口（默认24小时）
+    """
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        
+        from services.monitoring import metrics_collector
+        stats = metrics_collector.get_bootstrap_stats(hours=hours)
+        
+        return jsonify({
+            'status': 'ok',
+            'bootstrap_stats': stats
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取Bootstrap指标失败: {str(e)}'
+        }), 500
+
+
+@app.route('/monitoring/retrieval', methods=['GET'])
+def get_retrieval_metrics():
+    """
+    获取检索指标
+    
+    查询参数：
+    - hours: 统计时间窗口（默认24小时）
+    """
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        
+        from services.monitoring import metrics_collector
+        stats = metrics_collector.get_retrieval_stats(hours=hours)
+        
+        return jsonify({
+            'status': 'ok',
+            'retrieval_stats': stats
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取检索指标失败: {str(e)}'
+        }), 500
+
+
+@app.route('/monitoring/knowledge', methods=['GET'])
+def get_knowledge_metrics():
+    """
+    获取知识库状态指标
+    """
+    try:
+        from services.monitoring import metrics_collector, collect_knowledge_metrics
+        from services.db_manager import db_manager
+        
+        # 收集最新指标
+        with db_manager.get_session() as db_session:
+            metrics = collect_knowledge_metrics(db_session)
+        
+        
+        return jsonify({
+            'status': 'ok',
+            'knowledge_metrics': metrics.to_dict()
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取知识库指标失败: {str(e)}'
+        }), 500
+
+
+@app.route('/monitoring/alerts', methods=['GET'])
+def get_monitoring_alerts():
+    """
+    获取监控告警
+    
+    查询参数：
+    - limit: 返回数量限制（默认20）
+    """
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        
+        from services.monitoring import metrics_collector
+        alerts = metrics_collector.get_alerts(limit=limit)
+        
+        return jsonify({
+            'status': 'ok',
+            'alerts': alerts,
+            'count': len(alerts)
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'获取告警失败: {str(e)}'
+        }), 500
+
+
+@app.route('/monitoring/prometheus', methods=['GET'])
+def export_prometheus_metrics():
+    """
+    导出 Prometheus 格式的指标
+    
+    用于与 Prometheus 监控系统集成
+    """
+    try:
+        from services.monitoring import metrics_collector
+        prometheus_output = metrics_collector.export_prometheus()
+        
+        return prometheus_output, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    except Exception as e:
+        return f'# Error: {str(e)}', 500, {'Content-Type': 'text/plain'}
+
+
 if __name__ == '__main__':
     app.run(debug=Config.DEBUG, port=5000)

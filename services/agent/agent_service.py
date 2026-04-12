@@ -40,6 +40,9 @@ from services.onboarding_service import onboarding_service
 from services.db_manager import db_manager
 from services.bootstrap import bootstrap_service, BootstrapConfig
 
+# 导入监控模块
+from services.monitoring import record_bootstrap_from_result
+
 # 导入团队模式
 from agent.team import (
     AgentsTeam,
@@ -176,6 +179,14 @@ class AgentService:
                 if bootstrap_result.has_warnings:
                     for warning in bootstrap_result.stats.warnings:
                         logger.warning(f"[AgentService] Bootstrap告警: {warning}")
+                
+                # 记录 Bootstrap 监控指标
+                try:
+                    alerts = record_bootstrap_from_result(bootstrap_result, session_type="main_agent")
+                    if alerts:
+                        logger.info(f"[AgentService] Bootstrap监控告警: {len(alerts)} 条")
+                except Exception as e:
+                    logger.warning(f"[AgentService] 记录监控指标失败: {e}")
                         
             except Exception as e:
                 logger.error(f"[AgentService] Bootstrap加载失败，回退到旧方法: {e}")
