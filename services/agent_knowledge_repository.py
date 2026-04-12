@@ -424,6 +424,33 @@ class AgentMistakeRepository(BaseRepository):
             return True
         return False
     
+    def get_recent(self, session: DBSession, days: int = 30, 
+                   limit: int = 20) -> List[AgentMistake]:
+        """获取近期的踩坑记录
+        
+        用于 Bootstrap 加载时获取近期踩坑，提醒 Agent 避免重复犯错。
+        
+        Args:
+            session: 数据库会话
+            days: 最近多少天，默认 30 天
+            limit: 返回数量限制，默认 20 条
+        
+        Returns:
+            按严重程度和创建时间排序的踩坑记录列表
+        """
+        from datetime import datetime, timedelta
+        
+        cutoff = datetime.now() - timedelta(days=days)
+        
+        logger.info(f"获取近期踩坑: days={days}, limit={limit}")
+        
+        return session.query(AgentMistake).filter(
+            AgentMistake.created_at >= cutoff
+        ).order_by(
+            AgentMistake.severity.desc(),
+            AgentMistake.created_at.desc()
+        ).limit(limit).all()
+    
     def create_with_embedding(self, session: DBSession,
                               mistake_type: str,
                               context: str,
