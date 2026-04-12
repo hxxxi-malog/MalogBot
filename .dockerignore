@@ -1,0 +1,76 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.docker/
+
+# Local data
+postgres_data/
+uploads/
+archives/
+outputs/
+tasks/
+.codeflicker/
+
+# Environment files (will use .env.example)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Skills (large files)
+skills/ui-ux-pro-max-skill/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/

@@ -1,0 +1,171 @@
+services:
+  # ==================== Main Application ====================
+  malogbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: malogbot-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-5000}:5000"
+    environment:
+      # Flask Configuration
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-me}
+      - FLASK_DEBUG=${FLASK_DEBUG:-False}
+
+      # Database Configuration
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-malog}:${POSTGRES_PASSWORD:-malogbot123}@postgres:5432/${POSTGRES_DB:-malogbot}
+
+      # Redis Configuration
+      - REDIS_URL=redis://redis:6379/0
+
+      # LLM Configuration
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      - MODEL_NAME=${MODEL_NAME:-deepseek-chat}
+
+      # Embedding Configuration (Alibaba Cloud)
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-1024}
+      - RERANK_MODEL=${RERANK_MODEL:-qwen3-vl-rerank}
+
+      # RAG Configuration
+      - RAG_TOP_N=${RAG_TOP_N:-10}
+      - RAG_TOP_K=${RAG_TOP_K:-3}
+      - ENABLE_HYBRID_SEARCH=${ENABLE_HYBRID_SEARCH:-true}
+      - BM25_WEIGHT=${BM25_WEIGHT:-0.3}
+      - VECTOR_WEIGHT=${VECTOR_WEIGHT:-0.7}
+      - ENABLE_MMR=${ENABLE_MMR:-true}
+      - MMR_ALPHA=${MMR_ALPHA:-0.7}
+
+      # Bootstrap Configuration
+      - BOOTSTRAP_KNOWLEDGE_BUDGET=${BOOTSTRAP_KNOWLEDGE_BUDGET:-8000}
+      - BOOTSTRAP_MEMORY_BUDGET=${BOOTSTRAP_MEMORY_BUDGET:-4000}
+      - BOOTSTRAP_QUALITY_THRESHOLD=${BOOTSTRAP_QUALITY_THRESHOLD:-0.3}
+
+      # Memory Configuration
+      - ENABLE_LONG_TERM_MEMORY=${ENABLE_LONG_TERM_MEMORY:-true}
+      - MEMORY_TOKEN_BUDGET=${MEMORY_TOKEN_BUDGET:-2000}
+      - MEMORY_RELEVANCE_THRESHOLD=${MEMORY_RELEVANCE_THRESHOLD:-0.65}
+
+      # Web Search Configuration
+      - BAIDU_MCP_API_KEY=${BAIDU_MCP_API_KEY}
+      - WEB_SEARCH_ENABLED=${WEB_SEARCH_ENABLED:-false}
+
+      # Agent Configuration
+      - BASH_TIMEOUT=${BASH_TIMEOUT:-30}
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-128000}
+
+      # LangSmith (Optional)
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-MalogBot}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./archives:/app/archives
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - malogbot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ==================== PostgreSQL Database ====================
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: malogbot-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-malog}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-malogbot123}
+      - POSTGRES_DB=${POSTGRES_DB:-malogbot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - malogbot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-malog} -d ${POSTGRES_DB:-malogbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Redis Cache ====================
+  redis:
+    image: redis:7-alpine
+    container_name: malogbot-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - malogbot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Prometheus Monitoring ====================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: malogbot-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - malogbot-network
+    profiles:
+      - monitoring
+
+  # ==================== Grafana Dashboard ====================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: malogbot-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - malogbot-network
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+# ==================== Networks ====================
+networks:
+  malogbot-network:
+    driver: bridge
+
+# ==================== Volumes ====================
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
