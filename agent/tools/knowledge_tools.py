@@ -139,6 +139,7 @@ def _process_user_info(field: str, value: str, confidence: float, session_id: st
     try:
         from services.db_manager import db_manager
         from services.agent_knowledge_repository import user_profile_repo, knowledge_item_repo
+        from services.bootstrap import bootstrap_service
         
         logger.info(f"[KnowledgeTool] 记录用户信息: {field}={value}, confidence={confidence}")
         
@@ -170,6 +171,9 @@ def _process_user_info(field: str, value: str, confidence: float, session_id: st
                     tags=['user_info', field]
                 )
             
+            # 3. 使 USER 缓存失效
+            bootstrap_service.invalidate_cache('user')
+            
             logger.info(f"[KnowledgeTool] 用户信息记录完成: {field}")
             
     except Exception as e:
@@ -185,6 +189,7 @@ def _process_preference(category: str, preference: str, strength: str, session_i
     try:
         from services.db_manager import db_manager
         from services.agent_knowledge_repository import knowledge_item_repo
+        from services.bootstrap import bootstrap_service
         
         logger.info(f"[KnowledgeTool] 记录用户偏好: {category}/{preference}, strength={strength}")
         
@@ -211,6 +216,9 @@ def _process_preference(category: str, preference: str, strength: str, session_i
                     tags=['preference', category]
                 )
             
+            # 使 USER 缓存失效
+            bootstrap_service.invalidate_cache('user')
+            
             logger.info(f"[KnowledgeTool] 用户偏好记录完成: {category}")
             
     except Exception as e:
@@ -233,6 +241,7 @@ def _process_mistake(
     try:
         from services.db_manager import db_manager
         from services.agent_knowledge_repository import agent_mistake_repo, knowledge_item_repo
+        from services.bootstrap import bootstrap_service
         
         logger.info(f"[KnowledgeTool] 记录踩坑: type={mistake_type}, severity={severity}")
         
@@ -295,6 +304,9 @@ def _process_mistake(
                     importance={'low': 0.3, 'medium': 0.5, 'high': 0.7, 'critical': 0.9}.get(severity, 0.5),
                     tags=['mistake', mistake_type, severity]
                 )
+            
+            # 4. 使 AGENTS 缓存失效
+            bootstrap_service.invalidate_cache('agents')
             
             logger.info(f"[KnowledgeTool] 踩坑记录完成: id={mistake.id}")
             

@@ -464,6 +464,20 @@ class AgentMistakeRepository(BaseRepository):
         item.set_embedding(session, embedding)
         
         return item
+    
+    # ==================== 统计方法（用于监控） ====================
+    
+    def count_unresolved(self, session: DBSession) -> int:
+        """统计未解决的踩坑数量"""
+        return session.query(AgentMistake).filter_by(
+            is_resolved=False
+        ).count()
+    
+    def count_repeat(self, session: DBSession) -> int:
+        """统计重复发生的踩坑数量（occurrence_count >= 2）"""
+        return session.query(AgentMistake).filter(
+            AgentMistake.occurrence_count >= 2
+        ).count()
 
 
 class AgentRuleRepository(BaseRepository):
@@ -487,6 +501,14 @@ class AgentRuleRepository(BaseRepository):
             rule_type=rule_type,
             is_active=True
         ).order_by(AgentRule.priority.desc()).limit(limit).all()
+    
+    # ==================== 统计方法（用于监控） ====================
+    
+    def count_active(self, session: DBSession) -> int:
+        """统计启用的规则数量"""
+        return session.query(AgentRule).filter_by(
+            is_active=True
+        ).count()
     
     def create_from_mistake(self, session: DBSession,
                             mistake: AgentMistake,
@@ -847,6 +869,45 @@ class KnowledgeItemRepositoryEnhanced(KnowledgeItemRepository):
         ).order_by(
             KnowledgeItem.last_accessed_at.desc()
         ).limit(limit).all()
+    
+    # ==================== 统计方法（用于监控） ====================
+    
+    def count_by_source(self, session: DBSession, source_file_type: str) -> int:
+        """按来源类型统计数量"""
+        return session.query(KnowledgeItem).filter_by(
+            source_file_type=source_file_type
+        ).count()
+    
+    def count_expired(self, session: DBSession) -> int:
+        """统计过期记忆数量"""
+        return session.query(KnowledgeItem).filter_by(
+            is_expired=True
+        ).count()
+    
+    def count_unrefined(self, session: DBSession) -> int:
+        """统计未提炼的记忆数量（daily类型且未提炼）"""
+        return session.query(KnowledgeItem).filter(
+            KnowledgeItem.item_type == 'daily',
+            KnowledgeItem.is_refined == False
+        ).count()
+    
+    def count_never_accessed(self, session: DBSession) -> int:
+        """统计从未被访问的记忆数量"""
+        return session.query(KnowledgeItem).filter(
+            KnowledgeItem.access_count == 0
+        ).count()
+    
+    def get_avg_importance(self, session: DBSession) -> float:
+        """获取平均重要性分数"""
+        from sqlalchemy import func
+        result = session.query(func.avg(KnowledgeItem.importance)).scalar()
+        return float(result) if result else 0.0
+    
+    def get_total_access_count(self, session: DBSession) -> int:
+        """获取总访问次数"""
+        from sqlalchemy import func
+        result = session.query(func.sum(KnowledgeItem.access_count)).scalar()
+        return int(result) if result else 0
 
 
 # 创建全局实例
