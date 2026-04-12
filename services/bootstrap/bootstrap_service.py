@@ -212,7 +212,18 @@ class BootstrapService:
         加载 SOUL 知识块
         
         SOUL 是 Agent 人格定义，必须加载，不可截断
+        
+        缓存策略：SOUL 内容稳定，使用长时间缓存（1小时）
         """
+        # 尝试从缓存获取
+        cached = self.cache.get_soul()
+        if cached:
+            soul_content, soul_tokens = cached
+            logger.info(f"[BootstrapService] SOUL 缓存命中: {soul_tokens} tokens")
+            return soul_content, soul_tokens
+        
+        # 缓存未命中，从数据库加载
+        logger.info("[BootstrapService] SOUL 缓存未命中，从数据库加载")
         soul_file = knowledge_file_repo.get_by_type(session, 'soul')
         soul_content = self.assembler.format_soul(soul_file)
         soul_tokens = self.token_counter.count_tokens(soul_content)
@@ -220,6 +231,10 @@ class BootstrapService:
         # SOUL 超预算时仍需加载，但记录告警
         if soul_tokens > config.soul_budget:
             logger.warning(f"[BootstrapService] SOUL 超预算: {soul_tokens} > {config.soul_budget}")
+        
+        # 写入缓存
+        self.cache.set_soul(soul_content, soul_tokens)
+        logger.info(f"[BootstrapService] SOUL 已缓存: {soul_tokens} tokens")
         
         return soul_content, soul_tokens
     
@@ -235,7 +250,18 @@ class BootstrapService:
         来源：
         1. user_profile_fields 表（name, agent_role 等）
         2. knowledge_items 中 source_file_type='user' 的条目
+        
+        缓存策略：USER 内容变化不频繁，使用中等时间缓存（10分钟）
         """
+        # 尝试从缓存获取
+        cached = self.cache.get_user()
+        if cached:
+            user_content, user_tokens, items_count = cached
+            logger.info(f"[BootstrapService] USER 缓存命中: {user_tokens} tokens, {items_count} items")
+            return user_content, user_tokens, items_count
+        
+        # 缓存未命中，从数据库加载
+        logger.info("[BootstrapService] USER 缓存未命中，从数据库加载")
         used_tokens = 0
         items_count = 0
         
@@ -274,6 +300,10 @@ class BootstrapService:
         user_content = self.assembler.format_user(profile, user_items[:items_count] if user_items else [])
         total_tokens = self.token_counter.count_tokens(user_content)
         
+        # 写入缓存
+        self.cache.set_user(user_content, total_tokens, items_count)
+        logger.info(f"[BootstrapService] USER 已缓存: {total_tokens} tokens, {items_count} items")
+        
         return user_content, total_tokens, items_count
     
     def _load_agents(
@@ -288,7 +318,19 @@ class BootstrapService:
         来源：
         1. agent_rules 表中 is_active=True 的规则
         2. agent_mistakes 表中近 30 天的踩坑记录
+        
+        缓存策略：规则和踩坑可能变化，使用短时间缓存（5分钟）
         """
+        # 尝试从缓存获取
+        cached = self.cache.get_agents()
+        if cached:
+            agents_content, agents_tokens, rules_count, mistakes_count = cached
+            logger.info(f"[BootstrapService] AGENTS 缓存命中: {agents_tokens} tokens, {rules_count} rules, {mistakes_count} mistakes")
+            return agents_content, agents_tokens, rules_count, mistakes_count
+        
+        # 缓存未命中，从数据库加载
+        logger.info("[BootstrapService] AGENTS 缓存未命中，从数据库加载")
+        
         # 规则优先
         rules = agent_rule_repo.get_active(session, limit=50)
         
@@ -322,6 +364,10 @@ class BootstrapService:
         )
         total_tokens = self.token_counter.count_tokens(agents_content)
         
+        # 写入缓存
+        self.cache.set_agents(agents_content, total_tokens, rules_count, mistakes_count)
+        logger.info(f"[BootstrapService] AGENTS 已缓存: {total_tokens} tokens, {rules_count} rules, {mistakes_count} mistakes")
+        
         return agents_content, total_tokens, rules_count, mistakes_count
     
     def _load_memory(
@@ -334,7 +380,12 @@ class BootstrapService:
         加载 MEMORY 知识块（长期记忆）
         
         从 knowledge_items 中加载 source_file_type='memory' 的条目
+        
+        缓存策略：MEMORY 内容相对稳定，使用中等时间缓存（10分钟）
+        注意：由于 MEMORY 可能与 USER 有重叠，这里简化处理，不做细粒度缓存
         """
+        # MEMORY 不做全局缓存，因为它与 budget 强相关
+        # 但可以考虑基于 budget 分档缓存，这里简化处理
         memory_items = knowledge_item_repo.get_by_source_file(session, 'memory', limit=200)
         
         # 过滤低重要性和过期记忆
@@ -363,11 +414,25 @@ class BootstrapService:
         执行动态检索
         
         基于用户查询检索相关记忆
+        
+        缓存策略：基于查询 hash 缓存检索结果（3分钟）
         """
         # 计算召回量
         recall_k = config.calculate_recall_k(budget)
         
         logger.info(f"[BootstrapService] 动态检索召回量: {recall_k}")
+        
+        # 尝试从缓存获取检索结果
+        cache_key = self.cache.make_retrieval_key(user_query, recall_k)
+        cached_results = self.cache.get_retrieval(cache_key)
+        if cached_results:
+            # 缓存命中，直接使用
+            logger.info(f"[BootstrapService] 动态检索缓存命中: {cache_key}")
+            dynamic_content, tokens, count, avg_score, filtered_count = cached_results
+            return dynamic_content, tokens, count, avg_score, filtered_count
+        
+        # 缓存未命中，执行检索
+        logger.info(f"[BootstrapService] 动态检索缓存未命中，执行检索")
         
         try:
             # 调用检索引擎
@@ -414,6 +479,10 @@ class BootstrapService:
             avg_score = sum(r['final_score'] for r in results_dict[:count]) / count
         else:
             avg_score = 0.0
+        
+        # 写入缓存
+        self.cache.set_retrieval(cache_key, (dynamic_content, tokens, count, avg_score, filtered_count))
+        logger.info(f"[BootstrapService] 动态检索已缓存: {cache_key}")
         
         return dynamic_content, tokens, count, avg_score, filtered_count
     

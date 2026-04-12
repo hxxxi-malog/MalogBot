@@ -9,6 +9,10 @@ Bootstrap 缓存模块
 3. AGENTS 缓存：规则和踩坑可能变化，短时间缓存（TTL: 5分钟）
 4. 检索结果缓存：基于查询hash，短时间缓存（TTL: 3分钟）
 
+缓存架构：
+- L1 缓存：本地内存缓存（快速访问）
+- L2 缓存：Redis 分布式缓存（跨实例共享）
+
 缓存失效触发：
 - 知识更新时主动失效
 - TTL 到期自动失效
@@ -46,7 +50,9 @@ class CacheEntry:
 class BootstrapCache:
     """Bootstrap 缓存管理器
     
-    使用内存缓存减少数据库查询和计算开销
+    使用两级缓存架构：
+    - L1: 本地内存缓存（快速访问，进程内共享）
+    - L2: Redis 分布式缓存（跨实例共享，支持持久化）
     
     使用示例：
         cache = BootstrapCache()
@@ -70,35 +76,67 @@ class BootstrapCache:
         'token_count': 3600 # 1小时（Token计数）
     }
     
-    # 最大缓存条目数
+    # 最大本地缓存条目数
     MAX_CACHE_SIZE = 1000
     
-    def __init__(self, ttls: Dict[str, int] = None):
+    # 键前缀（用于 Redis）
+    KEY_PREFIX = "bootstrap:"
+    
+    def __init__(self, ttls: Dict[str, int] = None, enable_redis: bool = True):
         """
         初始化缓存管理器
         
         Args:
             ttls: 自定义 TTL 配置
+            enable_redis: 是否启用 Redis 缓存
         """
         self.ttls = {**self.DEFAULT_TTLS, **(ttls or {})}
+        self.enable_redis = enable_redis
         
-        # 缓存存储
+        # L1 缓存：本地内存
         self._cache: Dict[str, CacheEntry] = {}
+        
+        # L2 缓存：Redis（延迟加载）
+        self._redis_manager = None
         
         # 统计信息
         self._hits = 0
         self._misses = 0
+        self._l1_hits = 0
+        self._l2_hits = 0
         
         # 线程锁
         self._lock = threading.RLock()
         
-        logger.info(f"[BootstrapCache] 初始化完成，TTL配置: {self.ttls}")
+        logger.info(f"[BootstrapCache] 初始化完成，TTL配置: {self.ttls}, Redis: {enable_redis}")
+    
+    def _get_redis_manager(self):
+        """获取 Redis 管理器（延迟加载）"""
+        if self._redis_manager is None and self.enable_redis:
+            try:
+                from services.redis_service import redis_manager, is_redis_available
+                if is_redis_available():
+                    self._redis_manager = redis_manager
+                    logger.info("[BootstrapCache] Redis 缓存已启用")
+                else:
+                    logger.info("[BootstrapCache] Redis 不可用，使用本地缓存")
+            except ImportError:
+                logger.warning("[BootstrapCache] redis_service 模块不可用")
+        return self._redis_manager
+    
+    def _make_redis_key(self, key: str) -> str:
+        """生成 Redis 键"""
+        return f"{self.KEY_PREFIX}{key}"
     
     # ==================== 通用缓存方法 ====================
     
     def get(self, key: str) -> Optional[Any]:
         """
-        获取缓存值
+        获取缓存值（两级缓存查询）
+        
+        查询顺序：
+        1. L1 本地缓存
+        2. L2 Redis 缓存
         
         Args:
             key: 缓存键
@@ -106,38 +144,72 @@ class BootstrapCache:
         Returns:
             缓存值，不存在或过期返回 None
         """
+        # L1: 本地缓存
         with self._lock:
             entry = self._cache.get(key)
             
-            if entry is None:
-                self._misses += 1
-                return None
+            if entry is not None and not entry.is_expired():
+                self._hits += 1
+                self._l1_hits += 1
+                logger.debug(f"[BootstrapCache] L1 命中: {key}, 剩余TTL: {entry.remaining_ttl()}s")
+                return entry.value
             
-            if entry.is_expired():
-                # 过期，删除并返回 None
+            # L1 未命中或过期，清理
+            if entry is not None:
                 del self._cache[key]
-                self._misses += 1
-                return None
-            
-            self._hits += 1
-            logger.debug(f"[BootstrapCache] 命中: {key}, 剩余TTL: {entry.remaining_ttl()}s")
-            return entry.value
+        
+        # L2: Redis 缓存
+        redis_manager = self._get_redis_manager()
+        if redis_manager:
+            redis_key = self._make_redis_key(key)
+            value = redis_manager.get(redis_key)
+            if value is not None:
+                self._hits += 1
+                self._l2_hits += 1
+                logger.debug(f"[BootstrapCache] L2 命中: {key}")
+                
+                # 回填 L1 缓存
+                with self._lock:
+                    self._cache[key] = CacheEntry(
+                        value=value,
+                        created_at=datetime.now(),
+                        ttl_seconds=self._get_ttl_for_key(key)
+                    )
+                
+                return value
+        
+        self._misses += 1
+        return None
+    
+    def _get_ttl_for_key(self, key: str) -> int:
+        """根据键类型获取 TTL"""
+        if key.startswith('soul:'):
+            return self.ttls['soul']
+        elif key.startswith('user:'):
+            return self.ttls['user']
+        elif key.startswith('agents:'):
+            return self.ttls['agents']
+        elif key.startswith('retrieval:'):
+            return self.ttls['retrieval']
+        elif key.startswith('tokens:'):
+            return self.ttls['token_count']
+        return 300  # 默认 5 分钟
     
     def set(self, key: str, value: Any, ttl_seconds: int):
         """
-        设置缓存值
+        设置缓存值（两级缓存写入）
         
         Args:
             key: 缓存键
             value: 缓存值
             ttl_seconds: TTL（秒）
         """
+        # L1: 本地缓存
         with self._lock:
             # 检查容量，必要时淘汰
             if len(self._cache) >= self.MAX_CACHE_SIZE:
                 self._evict_expired()
                 if len(self._cache) >= self.MAX_CACHE_SIZE:
-                    # 仍然满，删除最老的
                     self._evict_oldest()
             
             self._cache[key] = CacheEntry(
@@ -145,19 +217,34 @@ class BootstrapCache:
                 created_at=datetime.now(),
                 ttl_seconds=ttl_seconds
             )
-            logger.debug(f"[BootstrapCache] 设置: {key}, TTL: {ttl_seconds}s")
+            logger.debug(f"[BootstrapCache] L1 设置: {key}, TTL: {ttl_seconds}s")
+        
+        # L2: Redis 缓存
+        redis_manager = self._get_redis_manager()
+        if redis_manager:
+            redis_key = self._make_redis_key(key)
+            redis_manager.set(redis_key, value, ttl=ttl_seconds)
+            logger.debug(f"[BootstrapCache] L2 设置: {key}, TTL: {ttl_seconds}s")
     
     def invalidate(self, key: str):
         """
-        使缓存失效
+        使缓存失效（两级缓存删除）
         
         Args:
             key: 缓存键
         """
+        # L1: 本地缓存
         with self._lock:
             if key in self._cache:
                 del self._cache[key]
-                logger.debug(f"[BootstrapCache] 失效: {key}")
+                logger.debug(f"[BootstrapCache] L1 失效: {key}")
+        
+        # L2: Redis 缓存
+        redis_manager = self._get_redis_manager()
+        if redis_manager:
+            redis_key = self._make_redis_key(key)
+            redis_manager.delete(redis_key)
+            logger.debug(f"[BootstrapCache] L2 失效: {key}")
     
     def invalidate_pattern(self, pattern: str):
         """
@@ -166,12 +253,20 @@ class BootstrapCache:
         Args:
             pattern: 键前缀模式
         """
+        # L1: 本地缓存
         with self._lock:
             keys_to_delete = [k for k in self._cache.keys() if k.startswith(pattern)]
             for key in keys_to_delete:
                 del self._cache[key]
             if keys_to_delete:
-                logger.debug(f"[BootstrapCache] 批量失效: {len(keys_to_delete)} 条 (pattern: {pattern})")
+                logger.debug(f"[BootstrapCache] L1 批量失效: {len(keys_to_delete)} 条 (pattern: {pattern})")
+        
+        # L2: Redis 缓存
+        redis_manager = self._get_redis_manager()
+        if redis_manager:
+            redis_pattern = self._make_redis_key(pattern)
+            redis_manager.delete_pattern(redis_pattern)
+            logger.debug(f"[BootstrapCache] L2 批量失效 (pattern: {pattern})")
     
     # ==================== 知识块专用方法 ====================
     
@@ -271,10 +366,17 @@ class BootstrapCache:
         logger.debug(f"[BootstrapCache] 淘汰最老: {oldest_key}")
     
     def clear(self):
-        """清空所有缓存"""
+        """清空所有缓存（两级缓存）"""
+        # L1: 本地缓存
         with self._lock:
             self._cache.clear()
-            logger.info("[BootstrapCache] 缓存已清空")
+            logger.info("[BootstrapCache] L1 缓存已清空")
+        
+        # L2: Redis 缓存
+        redis_manager = self._get_redis_manager()
+        if redis_manager:
+            redis_manager.delete_pattern(self.KEY_PREFIX)
+            logger.info("[BootstrapCache] L2 缓存已清空")
     
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
@@ -282,14 +384,28 @@ class BootstrapCache:
             total_requests = self._hits + self._misses
             hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
             
-            return {
-                "size": len(self._cache),
-                "max_size": self.MAX_CACHE_SIZE,
-                "hits": self._hits,
+            stats = {
+                "l1_size": len(self._cache),
+                "l1_max_size": self.MAX_CACHE_SIZE,
+                "total_hits": self._hits,
+                "l1_hits": self._l1_hits,
+                "l2_hits": self._l2_hits,
                 "misses": self._misses,
                 "hit_rate": round(hit_rate, 3),
-                "ttls": self.ttls
+                "ttls": self.ttls,
+                "redis_enabled": self._redis_manager is not None
             }
+            
+            # Redis 统计
+            redis_manager = self._get_redis_manager()
+            if redis_manager:
+                try:
+                    redis_stats = redis_manager.get_stats()
+                    stats["redis_stats"] = redis_stats
+                except Exception as e:
+                    stats["redis_error"] = str(e)
+            
+            return stats
     
     def cleanup(self):
         """清理过期缓存（可定时调用）"""
