@@ -38,6 +38,7 @@ from services.agent.tool_manager import tool_manager
 from services.context.context_compactor import check_context_overflow, emergency_compact
 from services.onboarding_service import onboarding_service
 from services.db_manager import db_manager
+from services.bootstrap import bootstrap_service, BootstrapConfig
 
 # 导入团队模式
 from agent.team import (
@@ -109,15 +110,16 @@ class AgentService:
         user_input: str,
         todo_reminder: str = "",
         planning_prompt: str = "",
-        session_id: str = None
+        session_id: str = None,
+        use_bootstrap: bool = True
     ) -> List:
         """
         构建LangChain消息列表
         
         采用分层提示词构建策略：
-        1. 核心规则 + 工具索引（常驻）
-        2. 场景指南（按需加载）
-        3. 动态上下文（记忆、知识库、任务状态）
+        1. Bootstrap 加载：SOUL + USER + AGENTS + MEMORY + 动态检索
+        2. 核心规则 + 工具索引（常驻）
+        3. 场景指南（按需加载）
         
         注意：工具调用结果会在 LLM 调用前通过 micro_compact 进行压缩。
         
@@ -127,39 +129,90 @@ class AgentService:
             todo_reminder: 任务提醒消息
             planning_prompt: 规划提示词
             session_id: 会话ID
+            use_bootstrap: 是否使用 Bootstrap 加载（默认 True）
             
         Returns:
             LangChain消息对象列表
         """
         messages = []
         
-        # 获取当前会话可用的工具列表（用于工具感知）
-        available_tools = self._get_available_tool_names(session_id)
+        # ========== Bootstrap 加载（第四阶段核心功能） ==========
+        system_prompt = None
+        bootstrap_result = None
         
-        # 获取知识库上下文（如果启用）
-        knowledge_context = None
-        if session_id:
-            kb_id = self.session_store.get_knowledge_base_id(session_id)
-            if kb_id:
-                knowledge_context = self._run_async_rag_search(user_input, kb_id, chat_history)
+        if use_bootstrap:
+            try:
+                # 使用 Bootstrap 服务加载知识
+                config = BootstrapConfig(knowledge_budget=15000)
+                
+                with db_manager.get_session() as db_session:
+                    # 执行异步加载
+                    import asyncio
+                    bootstrap_result = asyncio.run(
+                        bootstrap_service.load(
+                            session=db_session,
+                            user_query=user_input,
+                            config=config
+                        )
+                    )
+                
+                
+                system_prompt = bootstrap_result.system_prompt
+                
+                # 记录 Bootstrap 统计信息
+                logger.info(f"[AgentService] Bootstrap加载完成: "
+                           f"{bootstrap_result.used_tokens}/{bootstrap_result.budget} tokens "
+                           f"({bootstrap_result.usage_ratio:.1%})")
+                logger.info(f"[AgentService] 加载条目: {bootstrap_result.stats.total_items_count}, "
+                           f"过滤: {bootstrap_result.stats.filtered_count}")
+                logger.info(f"[AgentService] Token分布: "
+                           f"SOUL={bootstrap_result.stats.soul_tokens}, "
+                           f"USER={bootstrap_result.stats.user_tokens}, "
+                           f"AGENTS={bootstrap_result.stats.agents_tokens}, "
+                           f"MEMORY={bootstrap_result.stats.memory_tokens}, "
+                           f"动态={bootstrap_result.stats.dynamic_tokens}")
+                
+                # 检查是否有告警
+                if bootstrap_result.has_warnings:
+                    for warning in bootstrap_result.stats.warnings:
+                        logger.warning(f"[AgentService] Bootstrap告警: {warning}")
+                        
+            except Exception as e:
+                logger.error(f"[AgentService] Bootstrap加载失败，回退到旧方法: {e}")
+                system_prompt = None
         
-        # 获取记忆上下文
-        memory_context = self._get_memory_context(session_id)
         
-        # 获取任务状态
-        task_status = self._get_task_status(session_id)
+        # ========== 后备方案：使用旧的提示词构建方法 ==========
+        if system_prompt is None:
+            # 获取当前会话可用的工具列表（用于工具感知）
+            available_tools = self._get_available_tool_names(session_id)
+            
+            # 获取知识库上下文（如果启用）
+            knowledge_context = None
+            if session_id:
+                kb_id = self.session_store.get_knowledge_base_id(session_id)
+                if kb_id:
+                    knowledge_context = self._run_async_rag_search(user_input, kb_id, chat_history)
+            
+            # 获取记忆上下文
+            memory_context = self._get_memory_context(session_id)
+            
+            # 获取任务状态
+            task_status = self._get_task_status(session_id)
+            
+            # 使用旧的分层提示词构建器
+            system_prompt = build_system_prompt(
+                user_input=user_input,
+                chat_history=chat_history,
+                memory_context=memory_context,
+                knowledge_context=knowledge_context,
+                task_status=task_status,
+                todo_reminder=todo_reminder if todo_reminder else None,
+                planning_prompt=planning_prompt if planning_prompt else None,
+                available_tools=available_tools
+            )
+            logger.info("[AgentService] 使用旧的提示词构建方法")
         
-        # 使用新的分层提示词构建器
-        system_prompt = build_system_prompt(
-            user_input=user_input,
-            chat_history=chat_history,
-            memory_context=memory_context,
-            knowledge_context=knowledge_context,
-            task_status=task_status,
-            todo_reminder=todo_reminder if todo_reminder else None,
-            planning_prompt=planning_prompt if planning_prompt else None,
-            available_tools=available_tools
-        )
         
         # 添加系统提示
         messages.append(SystemMessage(content=system_prompt))

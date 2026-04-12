@@ -460,56 +460,89 @@ class LongTermMemoryService:
         relevance_threshold: float = None
     ) -> str:
         """
-        获取用于注入上下文的记忆（使用 Rerank 过滤）
+        获取用于注入上下文的记忆（使用新的记忆检索引擎）
+        
+        从 knowledge_items 表检索，支持混合检索 + MMR重排
         
         Args:
             query: 查询文本
-            session_id: 会话ID
+            session_id: 会话ID（暂未使用，保留兼容）
             max_tokens: 最大token数
-            relevance_threshold: 相关性阈值
+            relevance_threshold: 相关性阈值（暂未使用，由检索引擎配置控制）
             
         Returns:
             格式化的上下文字符串
         """
-        memories = self.search_memories_with_rerank(
-            query=query,
-            session_id=session_id,
-            top_n=15,
-            relevance_threshold=relevance_threshold or self.relevance_threshold
-        )
-        
-        if not memories:
+        try:
+            # 使用新的记忆检索引擎
+            from services.memory_search_engine import memory_search_engine, SearchConfig
+            
+            # 配置检索参数
+            config = SearchConfig(
+                min_hybrid_score=relevance_threshold or 0.3,
+                use_mmr=True,
+                use_time_decay=True
+            )
+            
+            # 执行异步检索
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                with db_manager.get_session() as session:
+                    results = loop.run_until_complete(
+                        memory_search_engine.search(
+                            query=query,
+                            session=session,
+                            top_k=15,
+                            config=config
+                        )
+                    )
+            finally:
+                loop.close()
+            
+            if not results:
+                return ""
+            
+            # 格式化输出
+            lines = ["## 长期记忆上下文\n"]
+            current_tokens = 0
+            
+            # 类型标签映射（新字段名）
+            type_label_map = {
+                'user_info': '用户信息',
+                'preference': '偏好',
+                'fact': '事实',
+                'decision': '决策',
+                'summary': '摘要',
+                'project': '项目',
+                'identity': '身份',
+                'rule': '规则',
+                'mistake': '踩坑'
+            }
+            
+            for result in results:
+                content = result.content
+                item_type = result.item_type or 'unknown'
+                final_score = result.final_score
+                
+                # 估算token
+                tokens = len(content) // 3
+                if current_tokens + tokens > max_tokens:
+                    break
+                
+                type_label = type_label_map.get(item_type, item_type)
+                
+                lines.append(f"- [{type_label}] {content} (相关性: {final_score:.2f})")
+                current_tokens += tokens
+            
+            if len(lines) > 1:
+                return '\n'.join(lines) + '\n'
             return ""
-        
-        # 格式化输出
-        lines = ["## 长期记忆上下文\n"]
-        current_tokens = 0
-        
-        for memory in memories:
-            content = memory.get('content', '')
-            memory_type = memory.get('memory_type', 'unknown')
-            relevance = memory.get('relevance_score', 0)
             
-            # 估算token
-            tokens = len(content) // 3
-            if current_tokens + tokens > max_tokens:
-                break
-            
-            type_label = {
-                MemoryType.USER_INFO: "用户信息",
-                MemoryType.PREFERENCE: "偏好",
-                MemoryType.FACT: "事实",
-                MemoryType.DECISION: "决策",
-                MemoryType.SUMMARY: "摘要",
-                MemoryType.PROJECT: "项目"
-            }.get(memory_type, memory_type)
-            
-            lines.append(f"- [{type_label}] {content} (相关性: {relevance:.2f})")
-            current_tokens += tokens
-        
-        if len(lines) > 1:
-            return '\n'.join(lines) + '\n'
-        return ""
+        except Exception as e:
+            logger.error(f"[Memory] 获取上下文记忆失败: {e}")
+            return ""
     
     # ==================== 辅助方法 ====================
     
