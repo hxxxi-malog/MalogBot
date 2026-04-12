@@ -37,6 +37,9 @@ from services.agent_knowledge_repository import (
 )
 from services.memory_search_engine import memory_search_engine
 
+# 缓存模块延迟导入，避免循环依赖
+# from services.bootstrap.cache import bootstrap_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +66,9 @@ class BootstrapService:
         """初始化 Bootstrap 服务"""
         self.token_counter = token_counter
         self.assembler = prompt_assembler
+        # 延迟导入缓存，避免循环依赖
+        from services.bootstrap.cache import bootstrap_cache
+        self.cache = bootstrap_cache
         logger.info("[BootstrapService] 初始化完成")
     
     async def load(
@@ -571,6 +577,39 @@ class BootstrapService:
             count += 1
         
         return '\n'.join(lines), count
+    
+    # ==================== 缓存管理方法 ====================
+    
+    def invalidate_cache(self, knowledge_type: str = None):
+        """
+        使缓存失效
+        
+        Args:
+            knowledge_type: 知识类型 ('soul', 'user', 'agents', None表示全部)
+        """
+        if knowledge_type == 'soul':
+            self.cache.invalidate_soul()
+            logger.info("[BootstrapService] SOUL 缓存已失效")
+        elif knowledge_type == 'user':
+            self.cache.invalidate_user()
+            logger.info("[BootstrapService] USER 缓存已失效")
+        elif knowledge_type == 'agents':
+            self.cache.invalidate_agents()
+            logger.info("[BootstrapService] AGENTS 缓存已失效")
+        elif knowledge_type is None:
+            self.cache.clear()
+            logger.info("[BootstrapService] 所有缓存已清空")
+        else:
+            logger.warning(f"[BootstrapService] 未知的知识类型: {knowledge_type}")
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        获取缓存统计信息
+        
+        Returns:
+            缓存统计信息
+        """
+        return self.cache.get_stats()
 
 
 # 创建全局实例

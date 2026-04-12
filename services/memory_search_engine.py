@@ -251,6 +251,9 @@ class MemorySearchEngine:
         Returns:
             检索结果列表
         """
+        import time
+        start_time = time.time()
+        
         cfg = config or self.config
         
         logger.info(f"[MemorySearchEngine] 开始检索: query='{query[:50]}...', top_k={top_k}")
@@ -306,6 +309,15 @@ class MemorySearchEngine:
         
         # Step 8: LRU刷新
         self._refresh_access(final_results, session)
+        
+        # Step 9: 记录检索指标
+        elapsed_ms = (time.time() - start_time) * 1000
+        self._record_retrieval_metrics(
+            query=query,
+            top_k=top_k,
+            results=final_results,
+            elapsed_ms=elapsed_ms
+        )
         
         logger.info(f"[MemorySearchEngine] 检索完成，返回 {len(final_results)} 条结果")
         
@@ -767,6 +779,47 @@ class MemorySearchEngine:
         """
         config = SearchConfig(filter_tags=tags)
         return await self.search(query, session, top_k, config)
+    
+    def _record_retrieval_metrics(
+        self,
+        query: str,
+        top_k: int,
+        results: List[SearchResult],
+        elapsed_ms: float
+    ):
+        """
+        记录检索指标
+        
+        Args:
+            query: 查询文本
+            top_k: 请求的数量
+            results: 检索结果
+            elapsed_ms: 耗时（毫秒）
+        """
+        try:
+            from services.monitoring import metrics_collector, RetrievalMetrics
+            
+            # 计算分数统计
+            scores = [r.final_score for r in results]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            max_score = max(scores) if scores else 0.0
+            min_score = min(scores) if scores else 0.0
+            
+            metrics = RetrievalMetrics(
+                timestamp=datetime.now(),
+                query=query,
+                top_k=top_k,
+                result_count=len(results),
+                avg_score=avg_score,
+                max_score=max_score,
+                min_score=min_score,
+                total_time_ms=elapsed_ms
+            )
+            
+            metrics_collector.record_retrieval(metrics)
+            logger.debug(f"[MemorySearchEngine] 记录检索指标: {elapsed_ms:.2f}ms, {len(results)} results")
+        except Exception as e:
+            logger.warning(f"[MemorySearchEngine] 记录检索指标失败: {e}")
 
 
 # 创建全局实例
