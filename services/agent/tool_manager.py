@@ -27,6 +27,7 @@ class ToolManager:
         self._memory_tools = None
         self._task_manager_tools = None
         self._planning_tools = None
+        self._knowledge_tools = None
         
     def _init_base_tools(self):
         """延迟初始化基础工具"""
@@ -104,6 +105,13 @@ class ToolManager:
         from agent.tools.planning import PLANNING_TOOLS
         self._planning_tools = list(PLANNING_TOOLS)
         
+    def _init_knowledge_tools(self):
+        """延迟初始化知识库工具"""
+        if self._knowledge_tools is not None:
+            return
+        from agent.tools.knowledge_tools import KNOWLEDGE_TOOLS
+        self._knowledge_tools = list(KNOWLEDGE_TOOLS)
+        
     def _get_web_search_tool(self):
         """懒加载Web搜索工具"""
         if self._web_search_tool is None:
@@ -140,6 +148,7 @@ class ToolManager:
         self._init_memory_tools()
         self._init_task_manager_tools()
         self._init_planning_tools()
+        self._init_knowledge_tools()
         
         # 根据是否是子Agent选择基础工具集
         if include_sub_agent:
@@ -158,6 +167,9 @@ class ToolManager:
         
         # 添加记忆工具
         tools.extend(self._memory_tools)
+        
+        # 添加知识库工具
+        tools.extend(self._knowledge_tools)
         
         # 如果是主Agent，添加spawn_sub_agent
         if include_sub_agent:
