@@ -1,0 +1,29 @@
+# Prometheus 配置文件
+# 用于监控 MalogBot 知识库系统
+
+global:
+  scrape_interval: 15s      # 默认采集间隔
+  evaluation_interval: 15s  # 规则评估间隔
+  external_labels:
+    monitor: 'malogbot-monitor'
+
+# 告警规则文件（可选）
+# rule_files:
+#   - "alerts.yml"
+
+# 采集配置
+scrape_configs:
+  # MalogBot 应用指标
+  - job_name: 'malogbot'
+    scrape_interval: 10s
+    static_configs:
+      # 注意：如果 MalogBot 运行在宿主机上，使用 host.docker.internal
+      # 如果 MalogBot 也在 Docker 中，使用容器名
+      - targets: ['host.docker.internal:5000']
+    metrics_path: '/monitoring/prometheus'
+    
+  # Prometheus 自身监控
+  - job_name: 'prometheus'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9090']
