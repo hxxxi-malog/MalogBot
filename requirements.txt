@@ -51,3 +51,6 @@ pgvector>=0.2.0
 # 中文分词和BM25检索
 jieba>=0.42.1
 rank_bm25>=0.2.2
+
+# Redis 缓存支持
+redis>=4.5.0
