@@ -20,12 +20,41 @@ from services.chat_service import chat_service
 from services.knowledge_base.knowledge_base_service import knowledge_base_service
 from services.knowledge_base.document_service import document_service
 
+# 导入 MCP API Blueprint
+from mcp.api import mcp_bp
+from mcp.registry import mcp_registry
+
 # 创建Flask应用
 app = Flask(__name__)
 app.config.from_object(Config)
 
 # 设置Secret Key（用于session）
 app.secret_key = Config.SECRET_KEY
+
+# 注册 MCP API Blueprint
+app.register_blueprint(mcp_bp)
+
+# ==================== MCP 服务初始化 ====================
+def init_mcp_services():
+    """初始化 MCP 服务：自动发现并注册已配置的服务"""
+    try:
+        # 初始化注册管理器
+        mcp_registry.initialize()
+        
+        # 自动发现并注册服务
+        results = mcp_registry.auto_discover_services()
+        
+        print(f"[MCP] 服务初始化完成: "
+              f"注册 {len(results['registered'])} 个, "
+              f"跳过 {len(results['skipped'])} 个, "
+              f"错误 {len(results['errors'])} 个")
+        
+    except Exception as e:
+        print(f"[MCP] 服务初始化失败: {e}")
+
+# 应用启动时初始化 MCP 服务
+with app.app_context():
+    init_mcp_services()
 
 
 def get_session_id():

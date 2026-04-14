@@ -15,6 +15,7 @@ from models.agent_knowledge import (
     serialize_embedding,
     deserialize_embedding
 )
+from models.mcp_server import MCPServer, MCPTool
 
 __all__ = [
     # 基础模型
@@ -38,5 +39,9 @@ __all__ = [
     'UserProfileField',
     'VECTOR_DIMENSION',
     'serialize_embedding',
-    'deserialize_embedding'
+    'deserialize_embedding',
+    
+    # MCP服务模型
+    'MCPServer',
+    'MCPTool',
 ]
