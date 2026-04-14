@@ -24,6 +24,8 @@ from contextvars import ContextVar
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from agent.tools.registry import registry, ToolCategory
+
 logger = logging.getLogger(__name__)
 
 # 后台处理线程池
@@ -851,9 +853,9 @@ def get_recent_mistakes(
         return f"获取踩坑失败: {str(e)}"
 
 
-# ==================== 导出 ====================
+# ==================== 注册工具到 Registry ====================
 
-KNOWLEDGE_TOOLS = [
+_KNOWLEDGE_TOOLS_LIST = [
     # 记忆存储工具
     remember_user_info,
     remember_preference,
@@ -864,6 +866,20 @@ KNOWLEDGE_TOOLS = [
     get_active_rules,
     get_recent_mistakes
 ]
+
+for _tool in _KNOWLEDGE_TOOLS_LIST:
+    registry.register(
+        _tool,
+        category=ToolCategory.KNOWLEDGE,
+        for_sub_agent=True,
+        priority=45,
+        module=__name__
+    )
+
+
+# ==================== 导出（向后兼容） ====================
+
+KNOWLEDGE_TOOLS = _KNOWLEDGE_TOOLS_LIST
 
 __all__ = [
     # 存储工具

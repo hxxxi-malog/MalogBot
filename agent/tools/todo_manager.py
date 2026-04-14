@@ -20,6 +20,8 @@ from pathlib import Path
 from datetime import datetime
 from langchain_core.tools import tool
 
+from agent.tools.registry import registry, ToolCategory
+
 
 class TodoManager:
     """
@@ -676,7 +678,22 @@ def complete_and_next(config: dict = None) -> str:
     return manager.complete_current_and_start_next()
 
 
+# ==================== 注册工具到 Registry ====================
+
+for _tool in [todo_manager, get_todo_status, complete_and_next]:
+    registry.register(
+        _tool,
+        category=ToolCategory.BASE,
+        for_sub_agent=True,
+        priority=20,
+        module=__name__
+    )
+
+
 # ==================== 导出 ====================
+
+# 工具列表（向后兼容）
+TODO_MANAGER_TOOLS = [todo_manager, get_todo_status, complete_and_next]
 
 __all__ = [
     'TodoManager',
@@ -688,5 +705,6 @@ __all__ = [
     'set_current_session',
     'get_current_session',
     'record_task_activity',
-    'check_task_reminder'
+    'check_task_reminder',
+    'TODO_MANAGER_TOOLS'
 ]

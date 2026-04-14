@@ -8,6 +8,8 @@ import logging
 from typing import Dict, Any, List, Optional
 from langchain_core.tools import tool
 
+from agent.tools.registry import registry, ToolCategory
+
 from agent.planning import (
     PlanningService,
     TaskComplexity,
@@ -158,7 +160,19 @@ def planning_execute(
     return "\n".join(output_lines)
 
 
-# 导出
+# ==================== 注册工具到 Registry ====================
+
+for _tool in [planning_analyze, planning_execute]:
+    registry.register(
+        _tool,
+        category=ToolCategory.PLANNING,
+        for_sub_agent=True,
+        priority=30,
+        module=__name__
+    )
+
+
+# 导出（向后兼容）
 __all__ = [
     'planning_analyze',
     'planning_execute',

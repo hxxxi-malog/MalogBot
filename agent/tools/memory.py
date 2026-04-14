@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from agent.tools.registry import registry, ToolCategory
+
 logger = logging.getLogger(__name__)
 
 # 后台处理线程池
@@ -152,7 +154,19 @@ def store_memories_batch(memories: List[str]) -> str:
     return f"已提交 {len(memories)} 条信息进行存储。"
 
 
-# 导出工具
+# ==================== 注册工具到 Registry ====================
+
+for _tool in [store_memory, store_memories_batch]:
+    registry.register(
+        _tool,
+        category=ToolCategory.MEMORY,
+        for_sub_agent=True,
+        priority=50,
+        module=__name__
+    )
+
+
+# 导出工具（向后兼容）
 MEMORY_TOOLS = [store_memory, store_memories_batch]
 
 __all__ = ['store_memory', 'store_memories_batch', 'MEMORY_TOOLS']

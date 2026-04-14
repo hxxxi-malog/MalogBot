@@ -25,6 +25,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from config import Config
+from agent.tools.registry import registry, ToolCategory
 
 logger = logging.getLogger(__name__)
 
@@ -694,6 +695,18 @@ def spawn_sub_agent(
     output_lines.append(f"下一步操作：{status_hint}")
     
     return "\n".join(output_lines)
+
+
+# ==================== 注册工具到 Registry ====================
+
+# spawn_sub_agent 只给主Agent使用，子Agent不能创建子Agent
+registry.register(
+    spawn_sub_agent,
+    category=ToolCategory.SUB_AGENT,
+    for_sub_agent=False,  # 子Agent不可用
+    priority=5,
+    module=__name__
+)
 
 
 # ==================== 导出 ====================

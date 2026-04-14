@@ -16,6 +16,7 @@ from typing import Tuple, List, Optional
 from langchain_core.tools import tool
 
 from config import Config
+from agent.tools.registry import registry, ToolCategory
 
 
 # ==================== 安全配置 ====================
@@ -481,7 +482,29 @@ def get_bash_tool_detailed_usage() -> str:
 """
 
 
-# 导出工具列表
+# ==================== 注册工具到 Registry ====================
+
+# 注册基础工具
+registry.register(
+    execute_bash,
+    category=ToolCategory.BASE,
+    for_sub_agent=True,
+    priority=10,
+    module=__name__
+)
+
+registry.register(
+    get_bash_tool_detailed_usage,
+    category=ToolCategory.BASE,
+    for_sub_agent=True,
+    priority=11,
+    module=__name__
+)
+
+
+# 导出工具列表（向后兼容）
+BASH_TOOLS = [execute_bash, get_bash_tool_detailed_usage]
+
 __all__ = [
     'execute_bash', 
     'execute_confirmed_bash', 
@@ -489,5 +512,6 @@ __all__ = [
     'check_dangerous_command', 
     'get_command_type',
     'get_bash_tool_detailed_usage',
-    'CONFIRMATION_REQUIRED_MARKER'
+    'CONFIRMATION_REQUIRED_MARKER',
+    'BASH_TOOLS'
 ]

@@ -19,6 +19,8 @@ from pathlib import Path
 from datetime import datetime
 from langchain_core.tools import tool
 
+from agent.tools.registry import registry, ToolCategory
+
 
 class TaskManager:
     """
@@ -812,9 +814,9 @@ def task_clear(config: dict = None) -> str:
     return manager.clear_all()
 
 
-# ==================== 工具列表 ====================
+# ==================== 注册工具到 Registry ====================
 
-TASK_MANAGER_TOOLS = [
+_TASK_MANAGER_TOOLS_LIST = [
     task_create,
     task_update,
     task_get,
@@ -826,6 +828,20 @@ TASK_MANAGER_TOOLS = [
     task_delete,
     task_clear
 ]
+
+for _tool in _TASK_MANAGER_TOOLS_LIST:
+    registry.register(
+        _tool,
+        category=ToolCategory.TASK,
+        for_sub_agent=True,
+        priority=35,
+        module=__name__
+    )
+
+
+# ==================== 工具列表（向后兼容） ====================
+
+TASK_MANAGER_TOOLS = _TASK_MANAGER_TOOLS_LIST
 
 
 # ==================== 导出 ====================

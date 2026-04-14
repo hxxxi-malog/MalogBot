@@ -12,6 +12,8 @@ from functools import lru_cache
 
 from langchain_core.tools import tool
 
+from agent.tools.registry import registry, ToolCategory
+
 
 # Skills 根目录
 SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
@@ -286,7 +288,19 @@ def get_skill_template(skill_name: str, template_file: str = "report_template.md
         }, ensure_ascii=False)
 
 
-# 导出工具列表
+# ==================== 注册工具到 Registry ====================
+
+for _tool in [list_skills, get_skill, get_skill_reference, get_skill_template]:
+    registry.register(
+        _tool,
+        category=ToolCategory.SKILLS,
+        for_sub_agent=True,
+        priority=40,
+        module=__name__
+    )
+
+
+# 导出工具列表（向后兼容）
 SKILLS_TOOLS = [
     list_skills,
     get_skill,

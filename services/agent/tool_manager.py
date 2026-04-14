@@ -1,117 +1,75 @@
 """
 工具管理器模块
 
-管理Agent可用的工具，包括：
-1. 工具注册和配置
-2. 根据会话设置动态返回工具列表
-3. 子Agent工具隔离
+管理Agent可用的工具，采用 Registry 模式：
+1. 工具在模块中声明即自动注册
+2. ToolManager 从 Registry 获取工具
+3. 新增工具无需修改此文件
 """
 from typing import List, Dict, Any, Optional
 import logging
 
 from config import Config
+from agent.tools.registry import (
+    registry,
+    ToolCategory,
+    get_all_tools,
+    get_tools_by_category
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ToolManager:
-    """工具管理器 - 管理Agent可用工具"""
+    """
+    工具管理器 - 基于 Registry 模式
+    
+    特点：
+    - 新增工具只需在工具模块中注册，无需修改此类
+    - 支持按分类、子Agent可用性过滤工具
+    - 支持动态加载工具模块
+    """
+    
+    # 工具模块路径
+    TOOL_MODULES = [
+        'agent.tools.bash',
+        'agent.tools.todo_manager',
+        'agent.tools.skills',
+        'agent.tools.memory',
+        'agent.tools.task_manager',
+        'agent.tools.planning',
+        'agent.tools.knowledge_tools',
+        'agent.tools.sub_agent',
+    ]
     
     def __init__(self):
         """初始化工具管理器"""
-        # 延迟导入工具，避免循环依赖
-        self._base_tools = None
-        self._sub_agent_tools = None
+        self._initialized = False
         self._web_search_tool = None
-        self._skills_tools = None
-        self._memory_tools = None
-        self._task_manager_tools = None
-        self._planning_tools = None
-        self._knowledge_tools = None
-        
-    def _init_base_tools(self):
-        """延迟初始化基础工具"""
-        if self._base_tools is not None:
+    
+    def _ensure_initialized(self):
+        """确保工具模块已加载"""
+        if self._initialized:
             return
-            
-        from agent.tools.bash import (
-            execute_bash,
-            get_bash_tool_detailed_usage,
-        )
-        from agent.tools.todo_manager import (
-            todo_manager,
-            get_todo_status,
-            complete_and_next,
-        )
         
-        # 基础工具（主Agent使用）
-        self._base_tools = [
-            execute_bash,
-            get_bash_tool_detailed_usage,
-            todo_manager,
-            get_todo_status,
-            complete_and_next,
-        ]
+        # 导入所有工具模块，触发注册
+        for module_path in self.TOOL_MODULES:
+            if not registry.is_module_loaded(module_path):
+                try:
+                    __import__(module_path)
+                    registry.mark_module_loaded(module_path)
+                    logger.debug(f"[ToolManager] 加载工具模块: {module_path}")
+                except Exception as e:
+                    logger.error(f"[ToolManager] 加载工具模块失败: {module_path}, 错误: {e}")
         
-    def _init_sub_agent_tools(self):
-        """延迟初始化子Agent工具"""
-        if self._sub_agent_tools is not None:
-            return
-            
-        from agent.tools.bash import (
-            execute_bash,
-            get_bash_tool_detailed_usage,
-        )
-        from agent.tools.todo_manager import (
-            todo_manager,
-            get_todo_status,
-            complete_and_next,
-        )
+        self._initialized = True
         
-        # 子Agent工具（不包含spawn_sub_agent，防止无限递归）
-        self._sub_agent_tools = [
-            execute_bash,
-            get_bash_tool_detailed_usage,
-            todo_manager,
-            get_todo_status,
-            complete_and_next,
-        ]
-        
-    def _init_skills_tools(self):
-        """延迟初始化技能工具"""
-        if self._skills_tools is not None:
-            return
-        from agent.tools.skills import SKILLS_TOOLS
-        self._skills_tools = list(SKILLS_TOOLS)
-        
-    def _init_memory_tools(self):
-        """延迟初始化记忆工具"""
-        if self._memory_tools is not None:
-            return
-        from agent.tools.memory import MEMORY_TOOLS
-        self._memory_tools = list(MEMORY_TOOLS)
-        
-    def _init_task_manager_tools(self):
-        """延迟初始化任务管理工具"""
-        if self._task_manager_tools is not None:
-            return
-        from agent.tools.task_manager import TASK_MANAGER_TOOLS
-        self._task_manager_tools = list(TASK_MANAGER_TOOLS)
-        
-    def _init_planning_tools(self):
-        """延迟初始化规划工具"""
-        if self._planning_tools is not None:
-            return
-        from agent.tools.planning import PLANNING_TOOLS
-        self._planning_tools = list(PLANNING_TOOLS)
-        
-    def _init_knowledge_tools(self):
-        """延迟初始化知识库工具"""
-        if self._knowledge_tools is not None:
-            return
-        from agent.tools.knowledge_tools import KNOWLEDGE_TOOLS
-        self._knowledge_tools = list(KNOWLEDGE_TOOLS)
-        
+        # 打印统计信息
+        stats = registry.get_stats()
+        logger.info(f"[ToolManager] 工具加载完成: 共 {stats['total_tools']} 个工具")
+        for cat, count in stats['by_category'].items():
+            logger.info(f"  - {cat}: {count} 个")
+    
     def _get_web_search_tool(self):
         """懒加载Web搜索工具"""
         if self._web_search_tool is None:
@@ -131,8 +89,6 @@ class ToolManager:
         """
         获取会话可用的工具列表
         
-        根据会话的设置动态返回可用的工具
-        
         Args:
             session_id: 会话ID
             session_store: 会话存储服务
@@ -141,40 +97,16 @@ class ToolManager:
         Returns:
             工具列表
         """
-        # 确保工具已初始化
-        self._init_base_tools()
-        self._init_sub_agent_tools()
-        self._init_skills_tools()
-        self._init_memory_tools()
-        self._init_task_manager_tools()
-        self._init_planning_tools()
-        self._init_knowledge_tools()
+        # 确保工具已加载
+        self._ensure_initialized()
         
-        # 根据是否是子Agent选择基础工具集
+        # 根据是否是主Agent获取工具
         if include_sub_agent:
-            tools = list(self._base_tools)
+            # 主Agent: 获取所有工具
+            tools = registry.get_tools(for_sub_agent=None)
         else:
-            tools = list(self._sub_agent_tools)
-            
-        # 添加任务管理工具
-        tools.extend(self._task_manager_tools)
-        
-        # 添加规划工具
-        tools.extend(self._planning_tools)
-        
-        # 添加技能工具
-        tools.extend(self._skills_tools)
-        
-        # 添加记忆工具
-        tools.extend(self._memory_tools)
-        
-        # 添加知识库工具
-        tools.extend(self._knowledge_tools)
-        
-        # 如果是主Agent，添加spawn_sub_agent
-        if include_sub_agent:
-            from agent.tools.sub_agent import spawn_sub_agent
-            tools.append(spawn_sub_agent)
+            # 子Agent: 只获取子Agent可用的工具
+            tools = registry.get_tools(for_sub_agent=True)
         
         # 检查会话是否启用联网搜索
         web_search_enabled = session_store.get_web_search_enabled(session_id)
@@ -183,7 +115,9 @@ class ToolManager:
             web_search_tool = self._get_web_search_tool()
             if web_search_tool:
                 tools.append(web_search_tool)
-                
+        
+        logger.info(f"[ToolManager] 会话 {session_id} 获取工具: {len(tools)} 个 (include_sub_agent={include_sub_agent})")
+        
         return tools
     
     def setup_sub_agent_tools(self, session_id: str, session_store):
@@ -208,9 +142,20 @@ class ToolManager:
         
         # 配置子Agent工具
         set_sub_agent_tools(sub_tools, session_id)
+    
+    def get_registry_stats(self) -> Dict[str, Any]:
+        """获取工具注册统计信息"""
+        self._ensure_initialized()
+        return registry.get_stats()
+    
+    def get_tool_meta(self, tool_name: str) -> Optional[Any]:
+        """获取工具元数据"""
+        self._ensure_initialized()
+        return registry.get_meta(tool_name)
 
 
 # 创建全局实例
 tool_manager = ToolManager()
+
 
 __all__ = ['ToolManager', 'tool_manager']
