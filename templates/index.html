@@ -2967,6 +2967,7 @@
         // 获取 MCP 类型图标
         function getMCPTypeIcon(type) {
             const icons = {
+                'streamable-http': '🚀',
                 'http': '🌐',
                 'sse': '📡',
                 'stdio': '💻'
@@ -3025,17 +3026,18 @@
                         <div style="margin-bottom: 16px;">
                             <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--gray-700);">传输类型 *</label>
                             <select id="mcpTransportType" onchange="toggleMCPFormFields()" style="width: 100%; padding: 10px 14px; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 14px;">
+                                <option value="streamable-http" ${serverData?.transport_type === 'streamable-http' ? 'selected' : ''}>Streamable HTTP (推荐)</option>
                                 <option value="http" ${serverData?.transport_type === 'http' ? 'selected' : ''}>HTTP</option>
                                 <option value="sse" ${serverData?.transport_type === 'sse' ? 'selected' : ''}>SSE</option>
                                 <option value="stdio" ${serverData?.transport_type === 'stdio' ? 'selected' : ''}>Stdio</option>
                             </select>
                         </div>
                         
-                        <!-- HTTP/SSE 模式字段 -->
+                        <!-- HTTP/SSE/Streamable-HTTP 模式字段 -->
                         <div id="httpFields" style="${serverData?.transport_type === 'stdio' ? 'display: none;' : ''}">
                             <div style="margin-bottom: 16px;">
                                 <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--gray-700);">服务 URL *</label>
-                                <input type="text" id="mcpUrl" value="${serverData?.url || ''}" style="width: 100%; padding: 10px 14px; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 14px;" placeholder="http://localhost:8080/mcp">
+                                <input type="text" id="mcpUrl" value="${serverData?.url || ''}" style="width: 100%; padding: 10px 14px; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 14px;" placeholder="https://mcp.tavily.com/mcp/?tavilyApiKey=YOUR_KEY">
                             </div>
                             <div style="margin-bottom: 16px;">
                                 <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--gray-700);">HTTP Headers <span style="font-size: 11px; color: var(--gray-500);">(JSON格式，可选)</span></label>
