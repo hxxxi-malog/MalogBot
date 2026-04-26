@@ -157,9 +157,10 @@ class StreamableHTTPTransport(Transport):
         """
         构建消息端点 URL
 
-        MCP v2025.03.26 规定所有消息发送到 /message 端点
+        MCP v2025.03.26 规定服务器提供单一的 MCP 端点路径（如 /mcp），
+        所有消息直接发送到该端点，而不是 /message 子路径。
         """
-        return f"{self.base_url}/message"
+        return self.base_url
 
     def _get_next_request_id(self) -> int:
         """获取下一个请求 ID"""
@@ -521,6 +522,124 @@ class StreamableHTTPTransport(Transport):
         """
         # Streamable HTTP 通常以 /mcp 结尾
         return url.rstrip("/").endswith("/mcp")
+
+    # ==================== MCP 便捷方法 ====================
+
+    async def initialize(
+        self,
+        client_name: str = "MalogBot",
+        client_version: str = "1.0.0",
+        capabilities: Optional[dict[str, Any]] = None,
+    ) -> MCPResponse:
+        """
+        初始化 MCP 连接
+
+        Args:
+            client_name: 客户端名称
+            client_version: 客户端版本
+            capabilities: 客户端能力
+
+        Returns:
+            MCPResponse 对象
+        """
+        params = {
+            "protocolVersion": self.PROTOCOL_VERSION,
+            "capabilities": capabilities or {},
+            "clientInfo": {
+                "name": client_name,
+                "version": client_version,
+            },
+        }
+        return await self.send_request("initialize", params)
+
+    async def list_tools(self) -> MCPResponse:
+        """
+        获取工具列表
+
+        Returns:
+            MCPResponse 对象，result 包含 tools 列表
+        """
+        return await self.send_request("tools/list")
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Optional[dict[str, Any]] = None,
+    ) -> MCPResponse:
+        """
+        调用工具
+
+        Args:
+            name: 工具名称
+            arguments: 工具参数
+
+        Returns:
+            MCPResponse 对象
+        """
+        params = {
+            "name": name,
+            "arguments": arguments or {},
+        }
+        return await self.send_request("tools/call", params)
+
+    async def list_resources(self) -> MCPResponse:
+        """
+        获取资源列表
+
+        Returns:
+            MCPResponse 对象
+        """
+        return await self.send_request("resources/list")
+
+    async def read_resource(self, uri: str) -> MCPResponse:
+        """
+        读取资源
+
+        Args:
+            uri: 资源 URI
+
+        Returns:
+            MCPResponse 对象
+        """
+        return await self.send_request("resources/read", {"uri": uri})
+
+    async def list_prompts(self) -> MCPResponse:
+        """
+        获取提示词列表
+
+        Returns:
+            MCPResponse 对象
+        """
+        return await self.send_request("prompts/list")
+
+    async def get_prompt(
+        self,
+        name: str,
+        arguments: Optional[dict[str, str]] = None,
+    ) -> MCPResponse:
+        """
+        获取提示词
+
+        Args:
+            name: 提示词名称
+            arguments: 提示词参数
+
+        Returns:
+            MCPResponse 对象
+        """
+        params = {"name": name}
+        if arguments:
+            params["arguments"] = arguments
+        return await self.send_request("prompts/get", params)
+
+    async def ping(self) -> MCPResponse:
+        """
+        发送 ping 请求
+
+        Returns:
+            MCPResponse 对象
+        """
+        return await self.send_request("ping")
 
     @staticmethod
     async def probe(base_url: str, timeout: float = 5.0) -> bool:

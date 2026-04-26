@@ -274,6 +274,10 @@ def toggle_web_search():
         # 设置联网搜索状态
         chat_service.set_web_search_enabled(session_id, enabled)
         
+        # 清除工具缓存，下次获取时会重新从 Registry 获取
+        from services.agent.tool_manager import tool_manager
+        tool_manager.clear_web_search_cache()
+        
         return jsonify({
             'enabled': enabled,
             'session_id': session_id,

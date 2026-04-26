@@ -20,8 +20,16 @@ from sqlalchemy.orm import Session as DBSession
 
 from models.mcp_server import MCPServer, MCPTool
 from services.infrastructure.database import db_manager
+from mcp.transport.streamable_http import StreamableHTTPTransport
 
 logger = logging.getLogger(__name__)
+
+
+# 支持的传输类型
+TRANSPORT_TYPES = ['stdio', 'http', 'sse', 'streamable-http']
+
+# 需要URL的传输类型
+URL_REQUIRED_TYPES = ['http', 'sse', 'streamable-http']
 
 
 @dataclass
@@ -40,6 +48,27 @@ class MCPServiceConfig:
     tags: Optional[List[str]] = None
     auto_start: bool = True
     enabled: bool = True
+
+    def validate(self) -> Tuple[bool, str]:
+        """
+        验证配置的有效性
+
+        Returns:
+            (is_valid, error_message)
+        """
+        # 检查传输类型是否支持
+        if self.transport_type not in TRANSPORT_TYPES:
+            return False, f"不支持的传输类型: {self.transport_type}，支持的类型: {TRANSPORT_TYPES}"
+
+        # 检查 stdio 模式必须提供 command
+        if self.transport_type == 'stdio' and not self.command:
+            return False, "stdio 模式必须提供 command 参数"
+
+        # 检查 http/sse/streamable-http 模式必须提供 url
+        if self.transport_type in URL_REQUIRED_TYPES and not self.url:
+            return False, f"{self.transport_type} 模式必须提供 url 参数"
+
+        return True, ""
 
 
 @dataclass
@@ -139,11 +168,11 @@ class MCPRegistry:
         
         Args:
             name: 服务名称（唯一标识）
-            transport_type: 传输类型（stdio/sse/http）
+            transport_type: 传输类型（stdio/sse/http/streamable-http）
             command: 启动命令（stdio模式）
             args: 命令参数
             env: 环境变量
-            url: 服务URL（sse/http模式）
+            url: 服务URL（sse/http/streamable-http模式）
             headers: HTTP头
             display_name: 显示名称
             description: 描述
@@ -155,6 +184,28 @@ class MCPRegistry:
         Returns:
             (success, message, server_obj)
         """
+        # 验证配置
+        config = MCPServiceConfig(
+            name=name,
+            transport_type=transport_type,
+            command=command,
+            args=args,
+            env=env,
+            url=url,
+            headers=headers,
+            display_name=display_name,
+            description=description,
+            category=category,
+            tags=tags,
+            auto_start=auto_start,
+            enabled=enabled
+        )
+        
+        is_valid, error_msg = config.validate()
+        if not is_valid:
+            logger.warning(f"[MCP Registry] 注册服务失败（验证错误）: {name} - {error_msg}")
+            return False, error_msg, None
+        
         try:
             with db_manager.get_session() as session:
                 # 检查是否已存在
@@ -188,30 +239,41 @@ class MCPRegistry:
                 session.flush()
                 
                 # 更新内存缓存
-                config = MCPServiceConfig(
-                    name=name,
-                    transport_type=transport_type,
-                    command=command,
-                    args=args,
-                    env=env,
-                    url=url,
-                    headers=headers,
-                    display_name=display_name or name,
-                    description=description,
-                    category=category,
-                    tags=tags,
-                    auto_start=auto_start,
-                    enabled=enabled
-                )
                 self._service_configs[name] = config
                 self._connection_status[name] = 'disabled'
                 
-                logger.info(f"[MCP Registry] 注册服务成功: {name}")
+                logger.info(f"[MCP Registry] 注册服务成功: {name} (类型: {transport_type})")
                 return True, "服务注册成功", server.to_dict()
                 
         except Exception as e:
             logger.error(f"[MCP Registry] 注册服务失败: {e}")
             return False, f"注册失败: {str(e)}", None
+    
+    def register_service_from_config(self, config: MCPServiceConfig) -> Tuple[bool, str, Optional[Dict]]:
+        """
+        从配置对象注册 MCP 服务
+        
+        Args:
+            config: MCPServiceConfig 配置对象
+            
+        Returns:
+            (success, message, server_dict)
+        """
+        return self.register_service(
+            name=config.name,
+            transport_type=config.transport_type,
+            command=config.command,
+            args=config.args,
+            env=config.env,
+            url=config.url,
+            headers=config.headers,
+            display_name=config.display_name,
+            description=config.description,
+            category=config.category,
+            tags=config.tags,
+            auto_start=config.auto_start,
+            enabled=config.enabled,
+        )
     
     def update_service(
         self,
@@ -459,7 +521,9 @@ class MCPRegistry:
             return False, f"服务 '{name}' 不存在", []
         
         try:
-            if config.transport_type == 'http':
+            if config.transport_type == 'streamable-http':
+                tools = await self._discover_tools_streamable_http(config)
+            elif config.transport_type == 'http':
                 tools = await self._discover_tools_http(config)
             elif config.transport_type == 'sse':
                 tools = await self._discover_tools_sse(config)
@@ -489,6 +553,49 @@ class MCPRegistry:
             logger.error(f"[MCP Registry] {error_msg}")
             self.set_service_status(name, 'error', error_msg)
             return False, error_msg, []
+    
+    async def _discover_tools_streamable_http(self, config: MCPServiceConfig) -> List[Dict]:
+        """
+        通过 Streamable HTTP 发现工具
+        
+        使用 StreamableHTTPTransport 与 MCP v2025.03.26 服务通信
+        
+        Args:
+            config: 服务配置
+            
+        Returns:
+            工具列表
+        """
+        if not config.url:
+            logger.warning(f"[MCP Registry] streamable-http 服务缺少 URL: {config.name}")
+            return []
+        
+        logger.info(f"[MCP Registry] 使用 StreamableHTTP 发现工具: {config.name} -> {config.url}")
+        
+        transport = StreamableHTTPTransport(
+            base_url=config.url,
+            headers=config.headers,
+            timeout=30.0
+        )
+        
+        try:
+            # 使用传输层的 discover_tools 方法
+            response = await transport.discover_tools()
+            
+            if response.success and response.result:
+                tools = response.result.get('tools', [])
+                logger.info(f"[MCP Registry] StreamableHTTP 发现 {len(tools)} 个工具: {config.name}")
+                return tools
+            else:
+                error_msg = response.error.get('message', 'Unknown error') if response.error else 'No tools found'
+                logger.warning(f"[MCP Registry] StreamableHTTP 工具发现失败: {config.name} - {error_msg}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"[MCP Registry] StreamableHTTP 通信错误: {config.name} - {e}")
+            return []
+        finally:
+            await transport.close()
     
     async def _discover_tools_http(self, config: MCPServiceConfig) -> List[Dict]:
         """通过 HTTP 发现工具"""
@@ -590,10 +697,11 @@ class MCPRegistry:
         return self._discovered_tools.get(server_name, [])
     
     def get_tools_by_category(self, category: str) -> List[MCPToolInfo]:
-        """按分类获取工具"""
+        """按分类获取工具（仅返回启用服务的工具）"""
         tools = []
         for name, config in self._service_configs.items():
-            if config.category == category:
+            # 只返回启用服务的工具
+            if config.category == category and config.enabled:
                 tools.extend(self._discovered_tools.get(name, []))
         return tools
     
@@ -613,7 +721,9 @@ class MCPRegistry:
                 if cfg.env:
                     server_config['env'] = cfg.env
             else:
+                # http/sse/streamable-http 类型
                 server_config['url'] = cfg.url
+                server_config['transport_type'] = cfg.transport_type
                 if cfg.headers:
                     server_config['headers'] = cfg.headers
             
@@ -642,7 +752,15 @@ class MCPRegistry:
                 url = None
                 headers = None
             else:
-                transport_type = 'http'
+                # 从配置中获取传输类型，默认根据 URL 格式判断
+                transport_type = server_config.get('transport_type')
+                if not transport_type:
+                    # 自动检测：以 /mcp 结尾的视为 streamable-http
+                    url = server_config.get('url', '')
+                    if url.rstrip('/').endswith('/mcp'):
+                        transport_type = 'streamable-http'
+                    else:
+                        transport_type = 'http'
                 command = None
                 args = None
                 env = None
@@ -884,6 +1002,205 @@ class MCPRegistry:
                 results['skipped'].append(name)
         
         return results
+    
+    # ==================== 配置导入导出 ====================
+    
+    def import_config(self, config_dict: Dict[str, Any]) -> Tuple[bool, str, int]:
+        """
+        从字典导入服务配置（兼容 Claude Desktop 配置格式）
+        
+        支持格式:
+        {
+            "mcpServers": {
+                "server_name": {
+                    "transport": "http",
+                    "url": "https://example.com/mcp"
+                }
+            }
+        }
+        
+        Args:
+            config_dict: 配置字典
+            
+        Returns:
+            (success, message, imported_count)
+        """
+        imported = 0
+        errors = []
+        
+        mcp_servers = config_dict.get("mcpServers", {})
+        if not mcp_servers:
+            return False, "配置中没有 mcpServers 字段", 0
+        
+        for name, server_config in mcp_servers.items():
+            try:
+                # 解析传输类型
+                transport = server_config.get("transport", "stdio")
+                # 兼容旧的 transport 字段
+                if transport == "http":
+                    transport_type = "streamable-http"
+                else:
+                    transport_type = transport
+                
+                # 注册服务
+                success, msg, _ = self.register_service(
+                    name=name,
+                    transport_type=transport_type,
+                    url=server_config.get("url"),
+                    command=server_config.get("command"),
+                    args=server_config.get("args"),
+                    env=server_config.get("env"),
+                    headers=server_config.get("headers"),
+                    display_name=server_config.get("display_name", name),
+                    description=server_config.get("description"),
+                    category=server_config.get("category"),
+                    tags=server_config.get("tags"),
+                    enabled=server_config.get("enabled", True),
+                    auto_start=server_config.get("auto_start", True),
+                )
+                
+                if success:
+                    imported += 1
+                else:
+                    errors.append(f"{name}: {msg}")
+                    
+            except Exception as e:
+                errors.append(f"{name}: {str(e)}")
+        
+        if errors:
+            return True, f"导入了 {imported} 个服务，{len(errors)} 个失败: {'; '.join(errors[:3])}", imported
+        
+        return True, f"成功导入 {imported} 个服务", imported
+    
+    def export_config(self, include_disabled: bool = False) -> Dict[str, Any]:
+        """
+        导出服务配置为字典格式（兼容 Claude Desktop 配置格式）
+        
+        Args:
+            include_disabled: 是否包含禁用的服务
+            
+        Returns:
+            配置字典
+        """
+        services = self.list_services()
+        mcp_servers = {}
+        
+        for server in services:
+            if not include_disabled and not server.get("enabled", True):
+                continue
+            
+            config = {
+                "transport": server.get("transport_type", "stdio"),
+            }
+            
+            if server.get("url"):
+                config["url"] = server["url"]
+            if server.get("command"):
+                config["command"] = server["command"]
+            if server.get("args"):
+                config["args"] = server["args"]
+            if server.get("env"):
+                config["env"] = server["env"]
+            if server.get("headers"):
+                config["headers"] = server["headers"]
+            if server.get("display_name"):
+                config["display_name"] = server["display_name"]
+            if server.get("description"):
+                config["description"] = server["description"]
+            if server.get("category"):
+                config["category"] = server["category"]
+            if server.get("tags"):
+                config["tags"] = server["tags"]
+            
+            mcp_servers[server["name"]] = config
+        
+        # 也包含内存缓存中未持久化的服务
+        for name, config_obj in self._service_configs.items():
+            if name not in mcp_servers:
+                if not include_disabled and not config_obj.enabled:
+                    continue
+                
+                config = {
+                    "transport": config_obj.transport_type,
+                }
+                
+                if config_obj.url:
+                    config["url"] = config_obj.url
+                if config_obj.command:
+                    config["command"] = config_obj.command
+                if config_obj.args:
+                    config["args"] = config_obj.args
+                if config_obj.env:
+                    config["env"] = config_obj.env
+                if config_obj.headers:
+                    config["headers"] = config_obj.headers
+                if config_obj.display_name:
+                    config["display_name"] = config_obj.display_name
+                if config_obj.description:
+                    config["description"] = config_obj.description
+                if config_obj.category:
+                    config["category"] = config_obj.category
+                if config_obj.tags:
+                    config["tags"] = config_obj.tags
+                
+                mcp_servers[name] = config
+        
+        return {"mcpServers": mcp_servers}
+    
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, Any]:
+        """
+        便捷方法：调用指定服务的工具
+        
+        Args:
+            server_name: 服务名称
+            tool_name: 工具名称
+            arguments: 工具参数
+            
+        Returns:
+            (success, message, result)
+        """
+        config = self._service_configs.get(server_name)
+        if not config:
+            config = self._load_service_config_from_db(server_name)
+            if config:
+                self._service_configs[server_name] = config
+        
+        if not config:
+            return False, f"服务 '{server_name}' 不存在", None
+        
+        if config.transport_type not in URL_REQUIRED_TYPES:
+            return False, f"服务 '{server_name}' 不支持 HTTP 调用", None
+        
+        try:
+            transport = StreamableHTTPTransport(
+                base_url=config.url,
+                headers=config.headers,
+                timeout=30.0,
+            )
+            
+            # 初始化连接
+            init_response = await transport.initialize()
+            if not init_response.success:
+                return False, f"初始化失败: {init_response.error}", None
+            
+            # 调用工具
+            tool_response = await transport.call_tool(tool_name, arguments)
+            
+            await transport.close()
+            
+            if tool_response.success:
+                return True, "调用成功", tool_response.result
+            else:
+                return False, f"调用失败: {tool_response.error}", None
+                
+        except Exception as e:
+            logger.error(f"[MCP Registry] 调用工具失败: {e}")
+            return False, f"调用异常: {str(e)}", None
 
 
 # 创建全局实例

@@ -71,13 +71,53 @@ class ToolManager:
             logger.info(f"  - {cat}: {count} 个")
     
     def _get_web_search_tool(self):
-        """懒加载Web搜索工具"""
+        """
+        从 MCP Registry 获取启用的 Web 搜索工具
+        
+        优先级：
+        1. 从 MCP Registry 获取 category='search' 且 enabled=True 的服务
+        2. 如果没有，返回 None
+        
+        Returns:
+            Web 搜索工具实例，如果未配置则返回 None
+        """
         if self._web_search_tool is None:
             try:
-                from mcp.adapters import get_web_search_tool
-                self._web_search_tool = get_web_search_tool()
+                from mcp.registry import mcp_registry
+                from mcp.tools import mcp_tools_manager
+                
+                # 初始化 Registry
+                mcp_registry.initialize()
+                
+                # 获取所有启用的 search 类别服务
+                servers = mcp_registry.list_services(enabled_only=True, category='search')
+                
+                if not servers:
+                    logger.info("[ToolManager] 没有启用的搜索服务")
+                    return None
+                
+                # 同步工具管理器
+                mcp_tools_manager.sync_from_registry()
+                
+                # 获取搜索类别的工具
+                search_tools = mcp_registry.get_tools_by_category('search')
+                
+                if search_tools:
+                    # 返回第一个搜索工具
+                    tool_info = search_tools[0]
+                    tool = mcp_tools_manager.get_tool(tool_info.name)
+                    if tool:
+                        self._web_search_tool = tool
+                        logger.info(f"[ToolManager] 使用 MCP 搜索工具: {tool_info.name} (服务: {tool_info.server_name})")
+                        return self._web_search_tool
+                
+                logger.info("[ToolManager] 未找到可用的搜索工具")
+                return None
+                
             except Exception as e:
                 logger.error(f"[ToolManager] 加载Web搜索工具失败: {e}")
+                return None
+        
         return self._web_search_tool
     
     def get_tools_for_session(
@@ -152,6 +192,36 @@ class ToolManager:
         """获取工具元数据"""
         self._ensure_initialized()
         return registry.get_meta(tool_name)
+    
+    def clear_web_search_cache(self):
+        """清除 Web 搜索工具缓存
+        
+        当用户切换搜索服务时调用此方法，下次获取工具时会重新从 Registry 获取
+        """
+        self._web_search_tool = None
+        logger.info("[ToolManager] Web 搜索工具缓存已清除")
+    
+    def get_available_search_services(self) -> List[Dict[str, Any]]:
+        """
+        获取所有可用的搜索服务列表
+        
+        Returns:
+            搜索服务信息列表
+        """
+        from mcp.registry import mcp_registry
+        
+        mcp_registry.initialize()
+        servers = mcp_registry.list_services(enabled_only=True, category='search')
+        
+        return [
+            {
+                'name': s.get('name'),
+                'display_name': s.get('display_name', s.get('name')),
+                'tools_count': s.get('tools_count', 0),
+                'status': s.get('status'),
+            }
+            for s in servers
+        ]
 
 
 # 创建全局实例

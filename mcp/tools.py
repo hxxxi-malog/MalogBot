@@ -13,6 +13,7 @@ from pydantic import BaseModel, create_model
 from langchain_core.tools import BaseTool
 
 from mcp.registry import mcp_registry, MCPToolInfo, MCPServiceConfig
+from mcp.transport.streamable_http import StreamableHTTPTransport
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,9 @@ class MCPDynamicTool(BaseTool):
     async def _arun(self, **kwargs) -> str:
         """异步执行"""
         try:
-            if self.server_config.transport_type == 'http':
+            if self.server_config.transport_type == 'streamable-http':
+                result = await self._call_streamable_http(kwargs)
+            elif self.server_config.transport_type == 'http':
                 result = await self._call_http(kwargs)
             elif self.server_config.transport_type == 'sse':
                 result = await self._call_sse(kwargs)
@@ -175,6 +178,49 @@ class MCPDynamicTool(BaseTool):
         logger.warning(f"[MCP Tool] stdio 模式需要子进程支持: {self.name}")
         return {"error": "stdio 模式暂不支持"}
     
+    async def _call_streamable_http(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        通过 Streamable HTTP 调用工具
+        
+        使用 StreamableHTTPTransport 与 MCP v2025.03.26 服务通信
+        
+        Args:
+            arguments: 工具参数
+            
+        Returns:
+            调用结果字典
+        """
+        if not self.server_config.url:
+            return {"error": "服务 URL 未配置"}
+        
+        logger.info(f"[MCP Tool] 使用 StreamableHTTP 调用工具: {self.name}")
+        
+        transport = StreamableHTTPTransport(
+            base_url=self.server_config.url,
+            headers=self.server_config.headers,
+            timeout=60.0
+        )
+        
+        try:
+            # 使用传输层的 call_tool 方法
+            response = await transport.call_tool(self.tool_info.name, arguments)
+            
+            if response.success:
+                # 将 MCPResponse 转换为字典格式
+                if response.result:
+                    return {"result": response.result}
+                else:
+                    return {"result": {}}
+            else:
+                error_msg = response.error.get('message', 'Unknown error') if response.error else 'Unknown error'
+                return {"error": error_msg}
+                
+        except Exception as e:
+            logger.error(f"[MCP Tool] StreamableHTTP 调用错误: {self.name} - {e}")
+            return {"error": str(e)}
+        finally:
+            await transport.close()
+    
     def _parse_result(self, result: Dict[str, Any]) -> str:
         """解析调用结果"""
         # 检查错误
@@ -214,6 +260,43 @@ class MCPDynamicTool(BaseTool):
                 return "\n".join(text_parts) if text_parts else str(result)
         
         return str(result)
+    
+    def get_result_dict(self, result: str) -> Optional[Dict[str, Any]]:
+        """
+        尝试将结果解析为字典
+        
+        Args:
+            result: 工具调用返回的字符串结果
+            
+        Returns:
+            解析后的字典，如果解析失败返回 None
+        """
+        try:
+            return json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    
+    def get_search_results(self, result: str) -> List[Dict[str, Any]]:
+        """
+        从搜索工具结果中提取搜索结果列表
+        
+        Args:
+            result: 工具调用返回的字符串结果
+            
+        Returns:
+            搜索结果列表
+        """
+        data = self.get_result_dict(result)
+        if not data:
+            return []
+        
+        # 尝试从不同格式中提取结果
+        if "results" in data:
+            return data["results"]
+        if "answer" in data and isinstance(data["answer"], list):
+            return data["answer"]
+        
+        return []
 
 
 class MCPToolsManager:
@@ -258,24 +341,34 @@ class MCPToolsManager:
         """获取所有工具"""
         return list(self._tools.values())
     
-    def sync_from_registry(self):
+    def sync_from_registry(self, auto_register: bool = True):
         """
         从注册管理器同步工具
         
-        根据注册管理器中的工具信息创建或更新工具
+        只同步启用服务的工具
+        
+        Args:
+            auto_register: 是否自动注册到全局 ToolRegistry
         """
         # 清除现有工具
         self._tools.clear()
         
-        # 从注册管理器获取工具和服务配置
-        all_tools = mcp_registry.get_all_tools()
-        
-        for tool_info in all_tools:
-            server_config = mcp_registry._service_configs.get(tool_info.server_name)
-            if server_config:
-                self.create_tool(tool_info, server_config)
+        # 遍历所有启用的服务
+        for name, config in mcp_registry._service_configs.items():
+            # 只同步启用服务的工具
+            if not config.enabled:
+                continue
+            
+            # 获取该服务的工具
+            tools = mcp_registry._discovered_tools.get(name, [])
+            for tool_info in tools:
+                self.create_tool(tool_info, config)
         
         logger.info(f"[MCP Tools] 同步了 {len(self._tools)} 个工具")
+        
+        # 自动注册到全局 ToolRegistry
+        if auto_register and self._tools:
+            self.register_to_tool_registry()
     
     async def refresh_and_sync(self):
         """
@@ -288,6 +381,85 @@ class MCPToolsManager:
         
         # 同步工具
         self.sync_from_registry()
+    
+    def register_to_tool_registry(self, server_name: Optional[str] = None) -> int:
+        """
+        将 MCP 工具注册到全局 ToolRegistry
+        
+        使 Agent 可以通过 ToolRegistry 获取 MCP 工具
+        
+        Args:
+            server_name: 指定服务名称，None 表示注册所有已发现的工具
+            
+        Returns:
+            注册的工具数量
+        """
+        from agent.tools.registry import registry, ToolCategory
+        
+        registered_count = 0
+        
+        # 获取要注册的工具
+        if server_name:
+            tools_to_register = {name: tool for name, tool in self._tools.items() 
+                                if tool.tool_info.server_name == server_name}
+        else:
+            tools_to_register = self._tools
+        
+        for tool_name, mcp_tool in tools_to_register.items():
+            try:
+                # 获取服务器配置以确定分类
+                server_config = mcp_tool.server_config
+                category = ToolCategory.WEB if server_config.category == 'search' else ToolCategory.CUSTOM
+                
+                # 注册到全局 Registry
+                registry.register(
+                    tool=mcp_tool,
+                    name=tool_name,
+                    category=category,
+                    for_sub_agent=True,
+                    priority=200,  # MCP 工具优先级较低
+                    description=mcp_tool.description,
+                    tags=['mcp', server_config.transport_type, server_config.name],
+                    module='mcp'
+                )
+                
+                registered_count += 1
+                logger.debug(f"[MCP Tools] 注册工具到 ToolRegistry: {tool_name}")
+                
+            except Exception as e:
+                logger.warning(f"[MCP Tools] 注册工具失败: {tool_name} - {e}")
+        
+        logger.info(f"[MCP Tools] 注册了 {registered_count} 个工具到 ToolRegistry")
+        return registered_count
+    
+    def unregister_from_tool_registry(self, server_name: Optional[str] = None) -> int:
+        """
+        从全局 ToolRegistry 注销 MCP 工具
+        
+        Args:
+            server_name: 指定服务名称，None 表示注销所有 MCP 工具
+            
+        Returns:
+            注销的工具数量
+        """
+        from agent.tools.registry import registry
+        
+        unregistered_count = 0
+        
+        # 获取要注销的工具
+        if server_name:
+            tools_to_unregister = {name: tool for name, tool in self._tools.items() 
+                                  if tool.tool_info.server_name == server_name}
+        else:
+            tools_to_unregister = self._tools
+        
+        for tool_name in tools_to_unregister.keys():
+            if registry.unregister(tool_name):
+                unregistered_count += 1
+                logger.debug(f"[MCP Tools] 从 ToolRegistry 注销工具: {tool_name}")
+        
+        logger.info(f"[MCP Tools] 注销了 {unregistered_count} 个工具")
+        return unregistered_count
 
 
 # 创建全局实例

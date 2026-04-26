@@ -81,11 +81,11 @@ def register_server():
     
     Request Body:
         name: 服务名称（唯一标识，必填）
-        transport_type: 传输类型（stdio/sse/http，默认 stdio）
+        transport_type: 传输类型（stdio/sse/http/streamable-http，默认 stdio）
         command: 启动命令（stdio 模式）
         args: 命令参数（数组）
         env: 环境变量（对象）
-        url: 服务 URL（sse/http 模式）
+        url: 服务 URL（sse/http/streamable-http 模式，必填）
         headers: HTTP 头（对象）
         display_name: 显示名称
         description: 描述
@@ -98,6 +98,16 @@ def register_server():
         status: 状态
         message: 消息
         server: 创建的服务信息
+    
+    Example (streamable-http):
+        POST /mcp/servers
+        {
+            "name": "tavily",
+            "transport_type": "streamable-http",
+            "url": "https://mcp.tavily.com/mcp/?tavilyApiKey=YOUR_KEY",
+            "display_name": "Tavily Search",
+            "category": "search"
+        }
     """
     try:
         data = request.json
@@ -111,7 +121,7 @@ def register_server():
         if transport_type == 'stdio':
             if not data.get('command'):
                 return jsonify({'error': 'stdio 模式需要提供 command'}), 400
-        elif transport_type in ('sse', 'http'):
+        elif transport_type in ('sse', 'http', 'streamable-http'):
             if not data.get('url'):
                 return jsonify({'error': f'{transport_type} 模式需要提供 url'}), 400
         
@@ -254,6 +264,10 @@ def enable_server(name: str):
         success, msg = mcp_registry.enable_service(name)
         
         if success:
+            # 清除工具缓存
+            from services.agent.tool_manager import tool_manager
+            tool_manager.clear_web_search_cache()
+            
             return jsonify({
                 'status': 'ok',
                 'message': f'服务 "{name}" 已启用'
@@ -271,6 +285,10 @@ def disable_server(name: str):
         success, msg = mcp_registry.disable_service(name)
         
         if success:
+            # 清除工具缓存
+            from services.agent.tool_manager import tool_manager
+            tool_manager.clear_web_search_cache()
+            
             return jsonify({
                 'status': 'ok',
                 'message': f'服务 "{name}" 已禁用'
