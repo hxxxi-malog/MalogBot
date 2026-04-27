@@ -636,57 +636,88 @@ class ResearchService:
     
     async def generate_report(self, task_id: str) -> ResearchReportModel:
         """
-        生成研究报告
-        
+        生成研究报告（非流式，用于后续调用）
+
         Args:
             task_id: 任务 ID
-            
+
         Returns:
             研究报告
         """
+        from services.deep_research.report_generator import ReportGenerator
+
         task = self._get_task(task_id)
-        
-        if task.status != ResearchStatus.COMPLETED:
-            raise ResearchError(
-                f"Cannot generate report in state: {task.status.value}"
+
+        # 从数据库加载研究方向数据
+        db = self._get_db()
+        try:
+            db_directions = db.query(DBResearchDirection).filter(
+                DBResearchDirection.task_id == uuid.UUID(task_id)
+            ).all()
+
+            # 获取研究计划
+            db_plan = db.query(DBResearchPlan).filter(
+                DBResearchPlan.task_id == uuid.UUID(task_id)
+            ).first()
+
+            # 转换为内存模型
+            direction_models = []
+            for d in db_directions:
+                dir_model = ResearchDirectionModel(
+                    id=str(d.id),
+                    task_id=str(d.task_id),
+                    direction_id=d.direction_id,
+                    name=d.name,
+                    status=d.status,
+                    progress=d.progress,
+                    summary=d.summary or "",
+                )
+                # 添加学习成果
+                if d.learnings:
+                    for l_data in d.learnings:
+                        dir_model.learnings.append(Learning.from_dict(l_data))
+                # 添加来源
+                if d.sources:
+                    for s_data in d.sources:
+                        dir_model.sources.append(Source.from_dict(s_data))
+                direction_models.append(dir_model)
+
+            # 转换计划
+            plan_model = None
+            if db_plan:
+                plan_model = ResearchPlanModel(
+                    id=str(db_plan.id),
+                    task_id=str(db_plan.task_id),
+                    directions=[
+                        DirectionSpec.from_dict(d)
+                        for d in (db_plan.directions or [])
+                    ],
+                )
+
+            # 使用 ReportGenerator 生成报告
+            generator = ReportGenerator()
+            markdown_content = generator.generate_markdown(
+                task,
+                plan_model,
+                direction_models,
             )
-        
-        # 收集所有 Track 的成果
-        tracks = self._tracks.get(task_id, [])
-        contexts = []
-        
-        for track in tracks:
-            context = AgentContext(
+
+            # 创建报告对象
+            report = ResearchReportModel(
                 task_id=task_id,
-                track_id=track.track_id,
-                session_id=task.session_id,
-                query=task.query,
-                topic=track.topic,
-                existing_learnings=track.learnings,
-                existing_sources=track.sources,
+                title=f"研究报告：{task.query[:50]}",
+                content_markdown=markdown_content,
+                source_count=sum(len(d.sources) for d in direction_models),
             )
-            contexts.append(context)
-        
-        # 使用 SynthesizerAgent 生成报告
-        synthesizer = self._get_synthesizer_agent()
-        result = synthesizer.synthesize(
-            contexts=contexts,
-            user_query=task.query,
-            title=f"研究报告：{task.query[:50]}",
-        )
-        
-        # 创建报告对象
-        report = ResearchReportModel(
-            task_id=task_id,
-            title=f"研究报告：{task.query[:50]}",
-            content_markdown=result.data.get("markdown", ""),
-            source_count=len(result.sources),
-        )
-        report.calculate_word_count()
-        
-        logger.info(f"Report generated for task {task_id}: {report.word_count} words")
-        
-        return report
+            report.calculate_word_count()
+
+            logger.info(f"[ResearchService] Report generated for task {task_id}: {report.word_count} words")
+
+            return report
+
+        finally:
+            if self._db is None:
+                db.close()
     
     # ============ 内部方法 ============
     
@@ -850,12 +881,13 @@ class ResearchService:
             if failed_count > 0:
                 logger.warning(f"{failed_count}/{len(tracks)} directions failed")
             
-            # 5. 生成最终报告
+            # 5. 流式生成最终报告
             task.current_step = "正在生成研究报告"
             task.update_timestamp()
             await self._push_progress(task, "正在生成研究报告")
             
-            report = await self.generate_report(task.id)
+            # 使用流式报告生成
+            report = await self._generate_report_stream(task, tracks)
             
             # 6. 完成
             task.status = ResearchStatus.COMPLETED
@@ -864,6 +896,9 @@ class ResearchService:
             
             # 推送完成事件
             await self._push_completed(task, report)
+            
+            # 7. 后台异步生成 PDF（不阻塞用户查看报告）
+            asyncio.create_task(self._generate_pdf_background(task.id, report))
             
             logger.info(f"Research completed for task {task.id}")
             
@@ -1383,5 +1418,208 @@ class ResearchService:
                 "report_id": report.id,
                 "word_count": report.word_count,
                 "source_count": report.source_count,
+                "pdf_generating": True,  # 标记 PDF 正在后台生成
             },
         )
+
+    # ============ 流式报告生成 ============
+
+    async def _generate_report_stream(
+        self,
+        task: ResearchTaskModel,
+        tracks: list[ResearchTrack],
+    ) -> ResearchReportModel:
+        """
+        流式生成研究报告
+
+        通过 LLM 流式生成报告内容，实时推送给前端，
+        同时保存报告到数据库。
+
+        Args:
+            task: 研究任务
+            tracks: 研究轨道列表
+
+        Returns:
+            研究报告对象
+        """
+        logger.info(f"[ResearchService] Starting streaming report generation for task {task.id}")
+
+        # 获取第一个 Track 用于 SSE 路由
+        track_id = tracks[0].track_id if tracks else ""
+
+        # 构建上下文
+        from services.deep_research.agents.base import AgentContext
+        contexts = []
+        for track in tracks:
+            context = AgentContext(
+                task_id=task.id,
+                track_id=track.track_id,
+                session_id=task.session_id,
+                query=task.query,
+                topic=track.topic,
+                existing_learnings=track.learnings,
+                existing_sources=track.sources,
+            )
+            contexts.append(context)
+
+        # 使用 SynthesizerAgent 流式生成
+        synthesizer = self._get_synthesizer_agent()
+        accumulated_content = ""
+
+        try:
+            async for chunk in synthesizer.synthesize_stream(
+                contexts=contexts,
+                user_query=task.query,
+                title=f"研究报告：{task.query[:50]}",
+                sse_gateway=sse_gateway,
+                task_id=task.id,
+                track_id=track_id,
+            ):
+                accumulated_content += chunk
+        except Exception as e:
+            logger.error(f"[ResearchService] Streaming report failed: {e}", exc_info=True)
+            # 降级：使用非流式生成
+            from services.deep_research.report_generator import ReportGenerator
+            generator = ReportGenerator()
+
+            # 从数据库加载数据
+            db = self._get_db()
+            try:
+                db_directions = db.query(DBResearchDirection).filter(
+                    DBResearchDirection.task_id == uuid.UUID(task.id)
+                ).all()
+                db_plan = db.query(DBResearchPlan).filter(
+                    DBResearchPlan.task_id == uuid.UUID(task.id)
+                ).first()
+
+                # 转换
+                direction_models = []
+                for d in db_directions:
+                    dir_model = ResearchDirectionModel(
+                        id=str(d.id),
+                        task_id=str(d.task_id),
+                        direction_id=d.direction_id,
+                        name=d.name,
+                        status=d.status,
+                        summary=d.summary or "",
+                    )
+                    if d.learnings:
+                        for l_data in d.learnings:
+                            dir_model.learnings.append(Learning.from_dict(l_data))
+                    if d.sources:
+                        for s_data in d.sources:
+                            dir_model.sources.append(Source.from_dict(s_data))
+                    direction_models.append(dir_model)
+
+                plan_model = None
+                if db_plan:
+                    plan_model = ResearchPlanModel(
+                        id=str(db_plan.id),
+                        task_id=str(db_plan.task_id),
+                        directions=[DirectionSpec.from_dict(d) for d in (db_plan.directions or [])],
+                    )
+
+                accumulated_content = generator.generate_markdown(task, plan_model, direction_models)
+            finally:
+                if self._db is None:
+                    db.close()
+
+        # 创建报告对象
+        source_count = sum(len(t.sources) for t in tracks)
+        report = ResearchReportModel(
+            task_id=task.id,
+            title=f"研究报告：{task.query[:50]}",
+            content_markdown=accumulated_content,
+            source_count=source_count,
+        )
+        report.calculate_word_count()
+
+        # 保存到数据库
+        db = self._get_db()
+        try:
+            db_report = DBResearchReport(
+                task_id=uuid.UUID(task.id),
+                title=report.title,
+                content_markdown=report.content_markdown,
+                word_count=report.word_count,
+                source_count=report.source_count,
+            )
+            db.add(db_report)
+            db.commit()
+            db.refresh(db_report)
+            report.id = str(db_report.id)
+            logger.info(f"[ResearchService] Report saved to DB: {report.id}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[ResearchService] Failed to save report: {e}")
+        finally:
+            if self._db is None:
+                db.close()
+
+        # 推送报告生成完成事件
+        from services.deep_research.events import create_report_complete_event
+        event = create_report_complete_event(
+            task_id=task.id,
+            track_id=track_id,
+            report_id=report.id,
+            word_count=report.word_count,
+            source_count=report.source_count,
+            pdf_generating=True,
+        )
+        await sse_gateway.push_event(event)
+
+        logger.info(f"[ResearchService] Streaming report completed: {report.word_count} words")
+        return report
+
+    async def _generate_pdf_background(self, task_id: str, report: ResearchReportModel):
+        """
+        后台异步生成 PDF
+
+        在报告生成完成后，异步生成 PDF 文件，
+        不阻塞用户查看报告内容。
+
+        Args:
+            task_id: 任务 ID
+            report: 研究报告
+        """
+        try:
+            logger.info(f"[ResearchService] Starting background PDF generation for task {task_id}")
+
+            from services.deep_research.pdf_exporter import PDFExporter
+
+            # 生成 PDF
+            exporter = PDFExporter()
+            pdf_bytes = exporter.export_pdf(
+                markdown_content=report.content_markdown,
+                title=report.title,
+            )
+
+            # 保存 PDF 路径到数据库
+            db = self._get_db()
+            try:
+                db_report = db.query(DBResearchReport).filter(
+                    DBResearchReport.task_id == uuid.UUID(task_id)
+                ).first()
+
+                if db_report:
+                    # 保存 PDF 到文件系统
+                    import os
+                    pdf_dir = os.path.join("outputs", "reports", task_id)
+                    os.makedirs(pdf_dir, exist_ok=True)
+                    pdf_path = os.path.join(pdf_dir, f"report.pdf")
+
+                    with open(pdf_path, 'wb') as f:
+                        f.write(pdf_bytes)
+
+                    db_report.pdf_path = pdf_path
+                    db.commit()
+                    logger.info(f"[ResearchService] PDF saved to: {pdf_path}")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[ResearchService] Failed to save PDF: {e}")
+            finally:
+                if self._db is None:
+                    db.close()
+
+        except Exception as e:
+            logger.error(f"[ResearchService] Background PDF generation failed: {e}", exc_info=True)

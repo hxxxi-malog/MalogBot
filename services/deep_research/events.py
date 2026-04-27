@@ -28,6 +28,10 @@ class SSEEventType(str, Enum):
     # 状态变更
     STATUS_CHANGE = "status_change"  # 状态变更
     
+    # 报告生成事件（流式）
+    REPORT_STREAM = "report_stream"  # 报告流式内容
+    REPORT_COMPLETE = "report_complete"  # 报告生成完成
+    
     # 完成事件
     COMPLETED = "completed"  # 研究完成
     ERROR = "error"  # 错误
@@ -222,6 +226,48 @@ class ErrorData:
         }
 
 
+@dataclass
+class ReportStreamData:
+    """
+    报告流式数据
+    
+    用于推送 LLM 流式生成的报告内容。
+    """
+    content: str  # 本次推送的内容片段
+    section: str = ""  # 当前章节：summary, directions, synthesis, answer, sources
+    is_final: bool = False  # 是否是最后一个片段
+    accumulated_length: int = 0  # 已累计的字符数
+
+    def to_dict(self) -> dict:
+        return {
+            "content": self.content,
+            "section": self.section,
+            "is_final": self.is_final,
+            "accumulated_length": self.accumulated_length,
+        }
+
+
+@dataclass
+class ReportCompleteData:
+    """
+    报告生成完成数据
+    
+    用于推送报告生成完成事件。
+    """
+    report_id: str
+    word_count: int
+    source_count: int
+    pdf_generating: bool = True  # PDF 是否正在后台生成
+
+    def to_dict(self) -> dict:
+        return {
+            "report_id": self.report_id,
+            "word_count": self.word_count,
+            "source_count": self.source_count,
+            "pdf_generating": self.pdf_generating,
+        }
+
+
 # ============ 事件工厂函数 ============
 
 def create_progress_event(
@@ -325,6 +371,52 @@ def create_status_change_event(
     return SSEEvent(
         event=SSEEventType.STATUS_CHANGE,
         task_id=task_id,
+        data=data.to_dict(),
+    )
+
+
+def create_report_stream_event(
+    task_id: str,
+    track_id: str,
+    content: str,
+    section: str = "",
+    is_final: bool = False,
+    accumulated_length: int = 0,
+) -> SSEEvent:
+    """创建报告流式内容事件"""
+    data = ReportStreamData(
+        content=content,
+        section=section,
+        is_final=is_final,
+        accumulated_length=accumulated_length,
+    )
+    return SSEEvent(
+        event=SSEEventType.REPORT_STREAM,
+        task_id=task_id,
+        track_id=track_id,
+        data=data.to_dict(),
+    )
+
+
+def create_report_complete_event(
+    task_id: str,
+    track_id: str,
+    report_id: str,
+    word_count: int,
+    source_count: int,
+    pdf_generating: bool = True,
+) -> SSEEvent:
+    """创建报告生成完成事件"""
+    data = ReportCompleteData(
+        report_id=report_id,
+        word_count=word_count,
+        source_count=source_count,
+        pdf_generating=pdf_generating,
+    )
+    return SSEEvent(
+        event=SSEEventType.REPORT_COMPLETE,
+        task_id=task_id,
+        track_id=track_id,
         data=data.to_dict(),
     )
 

@@ -27,6 +27,8 @@ from services.deep_research.research_service import (
 )
 from services.deep_research.models import ResearchMode, ResearchStatus
 from services.deep_research.events import SSEEventType
+from services.deep_research.report_generator import ReportGenerator
+from services.deep_research.pdf_exporter import PDFExporter
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +621,261 @@ def get_research_detail(task_id: str):
     except Exception as e:
         logger.error(f"[Research API] Failed to get detail: {e}", exc_info=True)
         return jsonify({'error': f'获取详情失败: {str(e)}'}), 500
+
+
+@research_bp.route('/<task_id>/report', methods=['GET'])
+def get_research_report(task_id: str):
+    """
+    获取研究报告内容
+
+    Args:
+        task_id: 任务ID
+
+    Query Parameters:
+        format: 返回格式 "markdown" | "html"（默认 markdown）
+
+    Returns:
+        report: 研究报告内容
+    """
+    try:
+        from models.research import (
+            ResearchTask as DBResearchTask,
+            ResearchPlan as DBResearchPlan,
+            ResearchDirection as DBResearchDirection,
+            ResearchReport as DBResearchReport,
+        )
+        from services.db_manager import db_manager
+
+        db = db_manager.session_factory()
+        try:
+            # 检查任务是否存在
+            task = db.query(DBResearchTask).filter(
+                DBResearchTask.id == __import__('uuid').UUID(task_id)
+            ).first()
+
+            if not task:
+                return jsonify({'error': '研究任务不存在'}), 404
+
+            # 检查任务状态
+            if task.status != 'completed':
+                return jsonify({'error': f'研究任务尚未完成，当前状态: {task.status}'}), 400
+
+            # 获取报告
+            report = db.query(DBResearchReport).filter(
+                DBResearchReport.task_id == __import__('uuid').UUID(task_id)
+            ).first()
+
+            if not report:
+                # 如果报告不存在，实时生成
+                logger.info(f"[Research API] Generating report for task {task_id}")
+
+                # 获取计划
+                plan = db.query(DBResearchPlan).filter(
+                    DBResearchPlan.task_id == __import__('uuid').UUID(task_id)
+                ).first()
+
+                # 获取方向
+                directions = db.query(DBResearchDirection).filter(
+                    DBResearchDirection.task_id == __import__('uuid').UUID(task_id)
+                ).all()
+
+                # 转换为内存模型
+                from services.deep_research.models import (
+                    ResearchTask as ResearchTaskModel,
+                    ResearchPlan as ResearchPlanModel,
+                    ResearchDirection as ResearchDirectionModel,
+                )
+
+                task_model = ResearchTaskModel(
+                    id=str(task.id),
+                    session_id=task.session_id,
+                    query=task.query,
+                    mode=ResearchMode(task.mode),
+                    status=ResearchStatus(task.status),
+                )
+
+                plan_model = None
+                if plan:
+                    from services.deep_research.models import DirectionSpec
+                    plan_model = ResearchPlanModel(
+                        id=str(plan.id),
+                        task_id=str(plan.task_id),
+                        directions=[
+                            DirectionSpec.from_dict(d)
+                            for d in (plan.directions or [])
+                        ],
+                    )
+
+                direction_models = []
+                for d in directions:
+                    from services.deep_research.models import Learning, Source
+                    dir_model = ResearchDirectionModel(
+                        id=str(d.id),
+                        task_id=str(d.task_id),
+                        direction_id=d.direction_id,
+                        name=d.name,
+                        status=d.status,
+                        progress=d.progress,
+                        summary=d.summary or "",
+                    )
+                    # 添加学习成果
+                    if d.learnings:
+                        for l_data in d.learnings:
+                            dir_model.learnings.append(Learning.from_dict(l_data))
+                    # 添加来源
+                    if d.sources:
+                        for s_data in d.sources:
+                            dir_model.sources.append(Source.from_dict(s_data))
+                    direction_models.append(dir_model)
+
+                # 生成报告
+                generator = ReportGenerator()
+                markdown_content = generator.generate_markdown(
+                    task_model,
+                    plan_model,
+                    direction_models,
+                )
+
+                # 保存到数据库
+                report = DBResearchReport(
+                    task_id=task.id,
+                    title=f"研究报告：{task.query[:50]}",
+                    content_markdown=markdown_content,
+                    word_count=len(markdown_content),
+                    source_count=sum(len(d.sources or []) for d in directions),
+                )
+                db.add(report)
+                db.commit()
+                db.refresh(report)
+
+                logger.info(f"[Research API] Report generated and saved: {report.id}")
+
+            # 返回报告
+            format_type = request.args.get('format', 'markdown')
+
+            if format_type == 'html' and report.content_html:
+                content = report.content_html
+            else:
+                content = report.content_markdown
+
+            return jsonify({
+                'status': 'ok',
+                'report': {
+                    'id': str(report.id),
+                    'task_id': str(report.task_id),
+                    'title': report.title,
+                    'content': content,
+                    'word_count': report.word_count,
+                    'source_count': report.source_count,
+                    'created_at': report.created_at.isoformat() if report.created_at else None,
+                }
+            })
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"[Research API] Failed to get report: {e}", exc_info=True)
+        return jsonify({'error': f'获取报告失败: {str(e)}'}), 500
+
+
+@research_bp.route('/<task_id>/report/download', methods=['GET'])
+def download_research_report(task_id: str):
+    """
+    下载研究报告
+
+    Args:
+        task_id: 任务ID
+
+    Query Parameters:
+        format: 下载格式 "markdown" | "pdf"（默认 pdf）
+
+    Returns:
+        文件下载
+    """
+    try:
+        from models.research import (
+            ResearchTask as DBResearchTask,
+            ResearchReport as DBResearchReport,
+        )
+        from services.db_manager import db_manager
+        from flask import send_file
+        import io
+        import tempfile
+
+        db = db_manager.session_factory()
+        try:
+            # 检查任务
+            task = db.query(DBResearchTask).filter(
+                DBResearchTask.id == __import__('uuid').UUID(task_id)
+            ).first()
+
+            if not task:
+                return jsonify({'error': '研究任务不存在'}), 404
+
+            # 获取报告
+            report = db.query(DBResearchReport).filter(
+                DBResearchReport.task_id == __import__('uuid').UUID(task_id)
+            ).first()
+
+            if not report:
+                return jsonify({'error': '报告尚未生成'}), 404
+
+            # 获取格式参数
+            format_type = request.args.get('format', 'pdf')
+
+            # 生成文件名
+            safe_title = "".join(c for c in report.title if c.isalnum() or c in (' ', '-', '_')).strip()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            if format_type == 'pdf':
+                # PDF 导出
+                try:
+                    exporter = PDFExporter()
+                    pdf_bytes = exporter.export_pdf(
+                        markdown_content=report.content_markdown,
+                        title=report.title,
+                    )
+
+                    filename = f"{safe_title}_{timestamp}.pdf"
+
+                    logger.info(f"[Research API] Downloading PDF report for task {task_id}")
+
+                    return send_file(
+                        io.BytesIO(pdf_bytes),
+                        mimetype='application/pdf',
+                        as_attachment=True,
+                        download_name=filename,
+                    )
+                except RuntimeError as e:
+                    # weasyprint 未安装，返回 Markdown
+                    logger.warning(f"[Research API] PDF export failed: {e}, returning markdown")
+                    format_type = 'markdown'
+                except Exception as e:
+                    logger.error(f"[Research API] PDF export error: {e}", exc_info=True)
+                    return jsonify({'error': f'PDF 导出失败: {str(e)}'}), 500
+
+            if format_type == 'markdown':
+                # Markdown 导出
+                filename = f"{safe_title}_{timestamp}.md"
+
+                logger.info(f"[Research API] Downloading Markdown report for task {task_id}")
+
+                return send_file(
+                    io.BytesIO(report.content_markdown.encode('utf-8')),
+                    mimetype='text/markdown',
+                    as_attachment=True,
+                    download_name=filename,
+                )
+
+            return jsonify({'error': f'不支持的格式: {format_type}'}), 400
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"[Research API] Failed to download report: {e}", exc_info=True)
+        return jsonify({'error': f'下载报告失败: {str(e)}'}), 500
 
 
 # 导出 Blueprint

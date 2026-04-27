@@ -149,6 +149,10 @@ class SynthesizerAgent(BaseExpertAgent):
         
         # 全篇报告
         result = agent.synthesize(all_directions_contexts)
+        
+        # 流式生成报告
+        async for chunk in agent.synthesize_stream(contexts, user_query, title):
+            yield chunk
     
     输出：
         - Markdown 格式的报告内容
@@ -602,3 +606,102 @@ class SynthesizerAgent(BaseExpertAgent):
             return result.data.get("markdown", "")
         else:
             return f"## 总结失败\n\n错误：{result.error}"
+
+    async def synthesize_stream(
+        self,
+        contexts: list[AgentContext],
+        user_query: str,
+        title: str = "研究报告",
+        sse_gateway = None,
+        task_id: str = "",
+        track_id: str = "",
+    ):
+        """
+        流式生成全篇报告
+        
+        通过 LLM 流式生成报告内容，并通过 SSE 实时推送给前端。
+        
+        Args:
+            contexts: 所有研究方向的上下文列表
+            user_query: 用户原始问题
+            title: 报告标题
+            sse_gateway: SSE 网关实例（用于推送事件）
+            task_id: 任务 ID
+            track_id: 轨道 ID
+            
+        Yields:
+            str: 报告内容片段
+        """
+        import asyncio
+        from typing import AsyncIterator
+        
+        self._total_executions += 1
+        logger.info(f"[SynthesizerAgent] Starting streaming report synthesis for {len(contexts)} directions")
+        
+        # 构建全篇报告任务
+        task_message = self._build_full_report_task(contexts, user_query, title)
+        
+        # 创建临时上下文
+        temp_context = AgentContext(
+            query=user_query,
+            topic=title,
+        )
+        
+        # 构建消息
+        messages = self._build_messages(temp_context, task_message)
+        
+        # 获取 LLM（启用流式）
+        try:
+            from agent.llm import get_llm
+            from langchain_core.messages import HumanMessage, SystemMessage
+            
+            llm = get_llm(streaming=True)
+            
+            # 构建消息列表
+            llm_messages = [
+                SystemMessage(content=self.system_prompt),
+            ]
+            messages[1]  # task message
+            llm_messages.append(HumanMessage(content=task_message))
+            
+            # 流式调用 LLM
+            accumulated_content = ""
+            async for chunk in llm.astream(llm_messages):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                accumulated_content += content
+                
+                # 通过 SSE 推送
+                if sse_gateway and task_id:
+                    from services.deep_research.events import (
+                        SSEEventType,
+                        create_report_stream_event,
+                    )
+                    event = create_report_stream_event(
+                        task_id=task_id,
+                        track_id=track_id,
+                        content=content,
+                        accumulated_length=len(accumulated_content),
+                    )
+                    await sse_gateway.push_event(event)
+                
+                yield content
+            
+            # 收集所有来源
+            all_sources = []
+            for ctx in contexts:
+                all_sources.extend(ctx.existing_sources)
+            
+            # 去重来源
+            unique_sources = self._deduplicate_sources(all_sources)
+            
+            self._successful_executions += 1
+            
+            logger.info(
+                f"[SynthesizerAgent] Streaming report completed: {len(accumulated_content)} chars, "
+                f"{len(unique_sources)} sources"
+            )
+            
+        except Exception as e:
+            logger.error(f"[SynthesizerAgent] Streaming synthesis failed: {e}", exc_info=True)
+            error_msg = f"\n\n报告生成出错：{str(e)}"
+            yield error_msg
