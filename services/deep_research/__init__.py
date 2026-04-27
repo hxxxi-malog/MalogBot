@@ -1,12 +1,12 @@
 """
 深度研究模块
 
-提供多轮、多方向的深度研究功能，支持：
-- 标准研究模式：直接开始多轮搜索分析
-- 深度研究模式：先澄清问题，生成研究计划确认后执行
-- 研究过程透明可控：实时进度推送、用户干预
+提供深度研究功能，包括：
+- 多轮、多方向研究
+- 专家型 Agent 协作
+- 结构化报告生成
+- PDF 导出
 """
-
 from services.deep_research.models import (
     ResearchTask,
     ResearchPlan,
@@ -14,44 +14,79 @@ from services.deep_research.models import (
     ResearchReport,
     ResearchMode,
     ResearchStatus,
-    ResearchDirectionStatus,
+    DirectionSpec,
+    Learning,
+    Source,
+    ClarificationQuestion,
 )
 from services.deep_research.state_machine import (
-    ResearchState,
     ResearchStateMachine,
+    ResearchState,
     InvalidStateTransition,
 )
+from services.deep_research.track import (
+    ResearchTrack,
+    TrackManager,
+    TrackStatus,
+)
+from services.deep_research.research_service import (
+    ResearchService,
+    ResearchError,
+    ResearchCancelledError,
+    ResearchFailedError,
+    SSEGateway,
+    CPUTaskExecutor,
+)
 from services.deep_research.events import (
-    SSEEventType,
     SSEEvent,
-    ProgressData,
-    ClarificationData,
-    PlanConfirmData,
-    DirectionProgressData,
-    CompletedData,
-    ErrorData,
+    SSEEventType,
+    create_progress_event,
+    create_clarification_event,
+    create_completed_event,
+    create_error_event,
+)
+from services.deep_research.utils import (
+    Deduplicator,
+    RedisDeduplicator,
+    WebContentCleaner,
 )
 
 __all__ = [
-    # 数据模型
-    'ResearchTask',
-    'ResearchPlan',
-    'ResearchDirection',
-    'ResearchReport',
-    'ResearchMode',
-    'ResearchStatus',
-    'ResearchDirectionStatus',
-    # 状态机
-    'ResearchState',
-    'ResearchStateMachine',
-    'InvalidStateTransition',
-    # SSE 事件
-    'SSEEventType',
-    'SSEEvent',
-    'ProgressData',
-    'ClarificationData',
-    'PlanConfirmData',
-    'DirectionProgressData',
-    'CompletedData',
-    'ErrorData',
+    # Models
+    "ResearchTask",
+    "ResearchPlan",
+    "ResearchDirection",
+    "ResearchReport",
+    "ResearchMode",
+    "ResearchStatus",
+    "DirectionSpec",
+    "Learning",
+    "Source",
+    "ClarificationQuestion",
+    # State Machine
+    "ResearchStateMachine",
+    "ResearchState",
+    "InvalidStateTransition",
+    # Track
+    "ResearchTrack",
+    "TrackManager",
+    "TrackStatus",
+    # Service
+    "ResearchService",
+    "ResearchError",
+    "ResearchCancelledError",
+    "ResearchFailedError",
+    "SSEGateway",
+    "CPUTaskExecutor",
+    # Events
+    "SSEEvent",
+    "SSEEventType",
+    "create_progress_event",
+    "create_clarification_event",
+    "create_completed_event",
+    "create_error_event",
+    # Utils
+    "Deduplicator",
+    "RedisDeduplicator",
+    "WebContentCleaner",
 ]
