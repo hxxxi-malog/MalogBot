@@ -16,6 +16,13 @@ from models.agent_knowledge import (
     deserialize_embedding
 )
 from models.mcp_server import MCPServer, MCPTool
+from models.research import (
+    ResearchTask,
+    ResearchPlan,
+    ResearchDirection,
+    ResearchReport,
+    ResearchSearch,
+)
 
 __all__ = [
     # 基础模型
@@ -44,4 +51,11 @@ __all__ = [
     # MCP服务模型
     'MCPServer',
     'MCPTool',
+    
+    # 深度研究模型
+    'ResearchTask',
+    'ResearchPlan',
+    'ResearchDirection',
+    'ResearchReport',
+    'ResearchSearch',
 ]
