@@ -54,3 +54,7 @@ rank_bm25>=0.2.2
 
 # Redis 缓存支持
 redis>=4.5.0
+
+# PDF 导出
+weasyprint>=60.0  # PDF 渲染
+markdown>=3.5.0  # Markdown 转 HTML
