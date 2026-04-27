@@ -24,6 +24,9 @@ from services.knowledge_base.document_service import document_service
 from mcp.api import mcp_bp
 from mcp.registry import mcp_registry
 
+# 导入 Research API Blueprint
+from api.research import research_bp
+
 # 创建Flask应用
 # 指定新前端构建目录作为静态文件目录
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'dist')
@@ -38,6 +41,9 @@ app.secret_key = Config.SECRET_KEY
 
 # 注册 MCP API Blueprint
 app.register_blueprint(mcp_bp)
+
+# 注册 Research API Blueprint
+app.register_blueprint(research_bp)
 
 # ==================== MCP 服务初始化 ====================
 def init_mcp_services():
