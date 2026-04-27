@@ -182,9 +182,11 @@ class LeaderAgent:
         
         # 核心组件
         from agent.llm import get_llm
+        from agent.team.task_board import get_task_board
         self.llm = get_llm(streaming=False)
         self.router = IntentRouter(self.llm)
-        self.task_board = TaskBoard()
+        # 使用会话级别的 TaskBoard，确保状态一致性
+        self.task_board = get_task_board(session_id)
         self.follower_pool: Optional[FollowerPool] = None
         
         # 执行状态
@@ -233,9 +235,13 @@ class LeaderAgent:
         # 使用LLM进行任务拆解
         decomposition = self._llm_decompose(goal, context)
         
+        logger.info(f"[Leader] LLM拆解完成，子任务数: {len(decomposition)}")
+        
         # 创建DAG计划
         plan = self.task_board.create_plan(goal, decomposition)
         self._current_plan = plan
+        
+        logger.info(f"[Leader] DAG计划创建完成，task_board._plan 已设置")
         
         self._log(f"任务拆解完成: {len(plan.subtasks)}个子任务")
         self._log(f"可并行组数: {len(plan.parallel_groups)}")
@@ -787,6 +793,14 @@ class LeaderAgent:
         
         logger.info(f"[Leader] 开始流式并行执行，共 {len(self._current_plan.parallel_groups)} 个并行组")
         
+        # 打印所有并行组的详细信息
+        for idx, group in enumerate(self._current_plan.parallel_groups):
+            logger.info(f"[Leader] 并行组 {idx + 1}: {group}")
+            for task_id in group:
+                task = self._current_plan.subtasks.get(task_id)
+                if task:
+                    logger.info(f"[Leader]   - {task_id}: 依赖={task.dependencies}, 状态={task.status}")
+        
         for group_idx, group in enumerate(self._current_plan.parallel_groups):
             # 获取该组任务的描述信息
             group_tasks_info = []
@@ -816,17 +830,36 @@ class LeaderAgent:
             while iteration < max_iterations:
                 iteration += 1
                 
+                # 先检查当前组是否所有任务都已完成
+                all_completed = all(
+                    self._current_plan.subtasks.get(task_id).status == TaskStatus.COMPLETED
+                    for task_id in tasks_in_group
+                    if self._current_plan.subtasks.get(task_id)
+                )
+                if all_completed:
+                    logger.info(f"[Leader] 并行组 {group_idx + 1} 所有任务已完成")
+                    break
+                
                 # 获取就绪任务
                 ready_tasks = self.task_board.get_ready_tasks()
                 
                 if not ready_tasks:
-                    # 没有就绪任务，检查是否所有任务都已完成
+                    # 没有就绪任务，检查是否有任务在执行中
                     progress = self.task_board.get_progress()
                     in_progress = progress.get("in_progress", 0)
                     
                     if in_progress == 0:
-                        # 当前组所有任务已完成
-                        logger.info(f"[Leader] 并行组 {group_idx + 1} 所有任务已完成")
+                        # 没有就绪任务，也没有执行中的任务
+                        # 但组内还有未完成的任务 -> 说明有问题（依赖未满足？）
+                        pending_in_group = [
+                            tid for tid in tasks_in_group
+                            if self._current_plan.subtasks.get(tid)
+                            and self._current_plan.subtasks.get(tid).status == TaskStatus.PENDING
+                        ]
+                        if pending_in_group:
+                            logger.error(f"[Leader] 并行组 {group_idx + 1} 存在无法执行的任务: {pending_in_group}")
+                        else:
+                            logger.info(f"[Leader] 并行组 {group_idx + 1} 所有任务已完成")
                         break
                     
                     # 还有任务在执行中，等待

@@ -170,12 +170,24 @@ class AgentsTeam:
         logger.info(f"[AgentsTeam] 进入团队模式(流式)")
         
         try:
-            # 1. 任务拆解
-            yield {"type": "task_decomposition", "message": "正在拆解任务..."}
+            # 1. 任务拆解（先不发送事件，等拆解完成）
             context = self._build_context(chat_history)
             plan = self.leader.decompose_task(user_input, context)
             
-            # 2. 流式执行团队任务
+            # 2. 任务拆解完成，发送 team_mode_start（此时看板已有数据）
+            logger.info(f"[AgentsTeam] 任务拆解完成，发送 team_mode_start")
+            yield {
+                "type": "team_mode_start",
+                "decision": {
+                    "mode": decision.mode.value,
+                    "complexity_score": decision.complexity.score,
+                    "reasoning": decision.reasoning
+                },
+                "total_tasks": len(plan.subtasks),
+                "parallel_groups": len(plan.parallel_groups)
+            }
+            
+            # 3. 流式执行团队任务
             parallel = decision.complexity.parallelizable
             for progress in self.leader.execute_team_stream(parallel=parallel):
                 yield progress

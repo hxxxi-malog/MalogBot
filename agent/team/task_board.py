@@ -130,16 +130,22 @@ class TaskBoard:
             
             ready = []
             completed = self._get_completed_task_ids()
+            logger.info(f"[TaskBoard] get_ready_tasks: 已完成任务={completed}")
             
             for task in self._plan.subtasks.values():
+                is_pending = task.status == TaskStatus.PENDING
+                is_deps_satisfied = task.is_ready(completed)
+                is_not_assigned = task.id not in self._task_assignments
+                
+                logger.info(f"[TaskBoard] 任务 {task.id}: pending={is_pending}, deps_satisfied={is_deps_satisfied}, not_assigned={is_not_assigned}, deps={task.dependencies}")
+                
                 # 任务状态为PENDING且依赖已满足且未被分配
-                if (task.status == TaskStatus.PENDING and
-                    task.is_ready(completed) and
-                    task.id not in self._task_assignments):
+                if is_pending and is_deps_satisfied and is_not_assigned:
                     ready.append(task)
             
             # 按优先级排序
             ready.sort(key=lambda t: t.priority.value, reverse=True)
+            logger.info(f"[TaskBoard] get_ready_tasks: 就绪任务数={len(ready)}")
             return ready
     
     def claim_task(

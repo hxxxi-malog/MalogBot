@@ -12,7 +12,7 @@ import json
 import os
 import asyncio
 
-from flask import Flask, render_template, request, jsonify, session, Response
+from flask import Flask, render_template, request, jsonify, session, Response, send_from_directory
 from werkzeug.utils import secure_filename
 
 from config import Config
@@ -25,7 +25,12 @@ from mcp.api import mcp_bp
 from mcp.registry import mcp_registry
 
 # 创建Flask应用
-app = Flask(__name__)
+# 指定新前端构建目录作为静态文件目录
+FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'dist')
+
+app = Flask(__name__, 
+            static_folder=FRONTEND_DIST,
+            static_url_path='')
 app.config.from_object(Config)
 
 # 设置Secret Key（用于session）
@@ -66,8 +71,11 @@ def get_session_id():
 
 @app.route('/')
 def index():
-    """主页"""
-    return render_template('index.html')
+    """主页 - 服务新前端"""
+    try:
+        return send_from_directory(FRONTEND_DIST, 'index.html')
+    except FileNotFoundError:
+        return "前端未构建，请先运行: cd frontend && npm run build", 500
 
 
 # ==================== 会话管理 API ====================
@@ -1072,6 +1080,23 @@ def export_prometheus_metrics():
         return prometheus_output, 200, {'Content-Type': 'text/plain; charset=utf-8'}
     except Exception as e:
         return f'# Error: {str(e)}', 500, {'Content-Type': 'text/plain'}
+
+
+# ==================== SPA 路由回退 ====================
+@app.route('/<path:path>')
+def spa_fallback(path):
+    """
+    SPA 路由回退 - 所有非 API 路由返回 index.html
+    让 Vue Router 处理前端路由
+    """
+    # 如果请求的是静态文件（有扩展名），返回 404
+    if '.' in path.split('/')[-1]:
+        return send_from_directory(FRONTEND_DIST, path)
+    # 否则返回 index.html（SPA 路由）
+    try:
+        return send_from_directory(FRONTEND_DIST, 'index.html')
+    except FileNotFoundError:
+        return "前端未构建，请先运行: cd frontend && npm run build", 500
 
 
 if __name__ == '__main__':

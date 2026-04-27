@@ -1673,6 +1673,8 @@ class AgentService:
             # 获取AgentsTeam
             team = self._get_agents_team(session_id)
             
+            logger.info(f"[AgentService] chat_stream_with_routing: 开始处理, TEAM_MODE_ENABLED={self.TEAM_MODE_ENABLED}")
+            
             # 获取对话历史
             chat_history, _ = self.session_store.get_full_context(session_id, user_input)
             
@@ -1682,39 +1684,30 @@ class AgentService:
             
             for progress in team.process_stream(user_input, chat_history):
                 progress_type = progress.get("type")
+                logger.info(f"[AgentService] 收到进度事件: {progress_type}")
                 
                 if progress_type == "routing_decision":
-                    # 路由决策
+                    # 路由决策 - 单Agent模式时需要处理
                     if progress.get("mode") == "single_agent":
                         logger.info(f"[AgentService] 路由决策: 单Agent模式")
                         yield from self.chat_stream(user_input, session_id)
                         return
-                    else:
-                        logger.info(f"[AgentService] 路由决策: 团队模式")
-                        yield {
-                            "type": "team_mode_start",
-                            "decision": {
-                                "mode": progress.get("mode"),
-                                "complexity_score": progress.get("complexity_score"),
-                                "reasoning": progress.get("reasoning")
-                            }
-                        }
+                    # 团队模式不在这里发送事件，等 orchestrator 发送 team_mode_start
+                    logger.info(f"[AgentService] 路由决策: 团队模式，等待任务拆解...")
                 
                 elif progress_type == "single_agent_mode":
                     # 单Agent模式，走原有流程
                     yield from self.chat_stream(user_input, session_id)
                     return
                 
-                elif progress_type == "task_decomposition":
-                    # 任务拆解中
-                    yield {
-                        "type": "team_progress",
-                        "stage": "decomposition",
-                        "message": progress.get("message", "正在拆解任务...")
-                    }
+                elif progress_type == "team_mode_start":
+                    # 团队模式开始（任务拆解已完成）
+                    logger.info(f"[AgentService] 团队模式开始，任务数: {progress.get('total_tasks')}")
+                    yield progress  # 直接转发
                 
                 elif progress_type == "team_start":
-                    # 团队执行开始
+                    # 团队执行开始（这个事件不再需要，因为 team_mode_start 已经包含信息）
+                    # 为了兼容，仍然转发
                     yield {
                         "type": "team_progress",
                         "stage": "start",
@@ -1829,7 +1822,10 @@ class AgentService:
             task_board = leader.task_board
             plan = task_board.get_plan()
             
+            logger.info(f"[AgentService] get_team_status: session={session_id}, plan={'exists' if plan else 'None'}")
+            
             if not plan:
+                logger.warning(f"[AgentService] No plan found, leader._current_plan={'exists' if leader._current_plan else 'None'}")
                 return {
                     "status": "idle",
                     "message": "当前没有执行计划"
@@ -1837,6 +1833,7 @@ class AgentService:
             
             # 获取进度信息
             progress = task_board.get_progress()
+            logger.info(f"[AgentService] Progress: {progress}")
             
             # 构建任务列表
             tasks = []
