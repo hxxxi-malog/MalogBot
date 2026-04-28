@@ -10,11 +10,13 @@
 import asyncio
 import json
 import logging
+import threading
+import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 import uuid
 
 from sqlalchemy.orm import Session as DBSession
@@ -130,6 +132,96 @@ class CPUTaskExecutor:
             logger.info("CPU task executor shutdown")
 
 
+# ============ 后台异步任务执行器 ============
+
+class BackgroundAsyncExecutor:
+    """
+    后台异步任务执行器
+    
+    解决 Flask 同步框架中 asyncio.create_task 无法正常工作的问题。
+    维护一个持久的后台线程，运行事件循环来执行异步任务。
+    """
+    
+    _instance = None
+    _loop: Optional[asyncio.AbstractEventLoop] = None
+    _thread: Optional[threading.Thread] = None
+    _tasks: Dict[str, asyncio.Task] = {}
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._start_background_loop()
+        return cls._instance
+    
+    @classmethod
+    def _start_background_loop(cls):
+        """启动后台事件循环线程"""
+        def run_loop():
+            cls._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(cls._loop)
+            logger.info("[BackgroundExecutor] Background event loop started")
+            cls._loop.run_forever()
+        
+        cls._thread = threading.Thread(target=run_loop, daemon=True, name="BackgroundAsyncExecutor")
+        cls._thread.start()
+        
+        # 等待事件循环启动
+        while cls._loop is None:
+            time.sleep(0.01)
+    
+    @classmethod
+    def submit(cls, coro, task_id: Optional[str] = None) -> asyncio.Task:
+        """
+        提交异步任务到后台执行
+        
+        Args:
+            coro: 协程对象
+            task_id: 可选的任务ID，用于追踪
+            
+        Returns:
+            asyncio.Task 对象
+        """
+        if cls._loop is None:
+            raise RuntimeError("Background event loop not initialized")
+        
+        # 在后台事件循环中创建任务
+        future = asyncio.run_coroutine_threadsafe(coro, cls._loop)
+        task = future  # 返回 future 以便调用者可以等待
+        
+        if task_id:
+            with cls._lock:
+                cls._tasks[task_id] = task
+        
+        logger.debug(f"[BackgroundExecutor] Submitted task: {task_id or 'anonymous'}")
+        return task
+    
+    @classmethod
+    def get_task(cls, task_id: str) -> Optional[asyncio.Task]:
+        """获取任务"""
+        with cls._lock:
+            return cls._tasks.get(task_id)
+    
+    @classmethod
+    def remove_task(cls, task_id: str):
+        """移除任务"""
+        with cls._lock:
+            cls._tasks.pop(task_id, None)
+    
+    @classmethod
+    def shutdown(cls):
+        """关闭后台执行器"""
+        if cls._loop:
+            cls._loop.call_soon_threadsafe(cls._loop.stop)
+        if cls._thread:
+            cls._thread.join(timeout=5)
+        logger.info("[BackgroundExecutor] Shutdown complete")
+
+
+# 全局后台执行器实例
+background_executor = BackgroundAsyncExecutor()
+
+
 # ============ SSE 网关 ============
 
 class SSEGateway:
@@ -204,6 +296,44 @@ class SSEGateway:
         
         await self._connections[session_id].put(msg)
         logger.debug(f"Pushed event {event_type} to session {session_id}")
+    
+    async def push_to_session(
+        self,
+        event_type: str,
+        task_id: str,
+        session_id: str,
+        data: dict,
+    ) -> bool:
+        """
+        直接推送到 Session（不依赖 Track 路由）
+        
+        用于研究启动前阶段（澄清、计划生成等）的消息推送。
+        当没有 Track 时，可以直接使用 session_id 推送消息。
+        
+        Args:
+            event_type: 事件类型
+            task_id: 任务 ID
+            session_id: 会话 ID
+            data: 事件数据
+            
+        Returns:
+            是否成功推送
+        """
+        if session_id not in self._connections:
+            logger.warning(f"No SSE connection for session: {session_id}")
+            return False
+        
+        msg = {
+            "event": event_type,
+            "task_id": task_id,
+            "track_id": "",  # 澄清阶段没有 track
+            "data": data,
+            "timestamp": datetime.now().isoformat(),
+        }
+        
+        await self._connections[session_id].put(msg)
+        logger.info(f"[SSEGateway] Pushed event {event_type} to session {session_id} (direct routing)")
+        return True
 
 
 # 全局单例
@@ -398,14 +528,24 @@ class ResearchService:
     
     # ============ 公共 API ============
     
-    async def start_research(
+    async def prepare_task(
         self,
         query: str,
         mode: ResearchMode,
         session_id: str,
     ) -> ResearchTaskModel:
         """
-        发起研究任务
+        准备研究任务（创建任务但不执行）
+        
+        这是两阶段启动模式的第一阶段：
+        1. 创建任务并持久化到数据库
+        2. 返回 task_id 给前端
+        3. 前端建立 SSE 连接
+        4. 前端调用 execute_task 启动执行
+        
+        这种设计解决了 SSE 时序竞争问题：
+        - 确保 SSE 连接在异步任务执行前已建立
+        - 避免澄清消息在连接建立前推送导致丢失
         
         Args:
             query: 用户问题
@@ -413,7 +553,7 @@ class ResearchService:
             session_id: 会话 ID
             
         Returns:
-            创建的研究任务
+            创建的研究任务（尚未执行）
         """
         # 1. 创建任务（数据库持久化）
         db_task = DBResearchTask(
@@ -430,10 +570,12 @@ class ResearchService:
             db.commit()
             db.refresh(db_task)
             
-            logger.info(f"[ResearchService] Research task created in DB: {db_task.id}, mode={mode.value}, query={query[:50]}")
+            logger.info(
+                f"[ResearchService] Task prepared: {db_task.id}, mode={mode.value}, session={session_id}"
+            )
         except Exception as e:
             db.rollback()
-            logger.error(f"[ResearchService] Failed to create task in DB: {e}")
+            logger.error(f"[ResearchService] Failed to prepare task: {e}")
             raise
         finally:
             if self._db is None:
@@ -444,13 +586,69 @@ class ResearchService:
         self._tasks[task.id] = task
         task.started_at = datetime.now()
         
-        # 3. 根据模式执行
-        if mode == ResearchMode.STANDARD:
-            # 标准模式：直接执行
-            asyncio.create_task(self._execute_standard_research(task))
+        # 注意：不启动异步任务，等待 execute_task 调用
+        return task
+    
+    async def execute_task(self, task_id: str) -> ResearchTaskModel:
+        """
+        执行研究任务
+        
+        这是两阶段启动模式的第二阶段：
+        - 前端已建立 SSE 连接
+        - 启动异步任务执行研究流程
+        
+        Args:
+            task_id: 任务 ID
+            
+        Returns:
+            研究任务
+            
+        Raises:
+            ResearchError: 如果任务不存在或状态不对
+        """
+        task = self._get_task(task_id)
+        
+        # 验证任务状态
+        if task.status != ResearchStatus.PENDING:
+            raise ResearchError(
+                f"Task {task_id} is not in PENDING state, "
+                f"current state: {task.status.value}"
+            )
+        
+        logger.info(f"[ResearchService] Executing task: {task_id}, mode={task.mode.value}")
+        
+        # 根据模式启动异步任务（使用后台执行器）
+        if task.mode == ResearchMode.STANDARD:
+            background_executor.submit(self._execute_standard_research(task), task_id=f"research_{task_id}")
         else:
-            # 深度模式：先分析问题
-            asyncio.create_task(self._analyze_and_plan(task))
+            background_executor.submit(self._analyze_and_plan(task), task_id=f"research_{task_id}")
+        
+        return task
+    
+    async def start_research(
+        self,
+        query: str,
+        mode: ResearchMode,
+        session_id: str,
+    ) -> ResearchTaskModel:
+        """
+        发起研究任务（单阶段启动，向后兼容）
+        
+        注意：此方法存在 SSE 时序竞争问题，推荐使用 prepare_task + execute_task
+        
+        Args:
+            query: 用户问题
+            mode: 研究模式
+            session_id: 会话 ID
+            
+        Returns:
+            创建的研究任务
+        """
+        # 创建任务
+        task = await self.prepare_task(query, mode, session_id)
+        
+        # 立即执行（存在时序竞争风险）
+        await self.execute_task(task.id)
         
         return task
     
@@ -495,8 +693,8 @@ class ResearchService:
         task.status = ResearchStatus.RESUMED
         task.update_timestamp()
         
-        # 继续执行：生成研究计划
-        asyncio.create_task(self._generate_and_confirm_plan(task, [answer]))
+        # 继续执行：生成研究计划（使用后台执行器）
+        background_executor.submit(self._generate_and_confirm_plan(task, [answer]), task_id=f"resume_{task_id}")
         
         return task
     
@@ -629,8 +827,10 @@ class ResearchService:
         task.status = ResearchStatus.CONFIRMED
         task.update_timestamp()
         
-        # 开始执行
-        asyncio.create_task(self._execute_research(task, plan))
+        # 开始执行（使用后台执行器）
+        background_executor.submit(self._execute_research(task, plan), task_id=f"execute_{task_id}")
+        
+        logger.info(f"[ResearchService] Research execution submitted for task {task_id}")
         
         return task
     
@@ -854,6 +1054,9 @@ class ResearchService:
             task.current_step = "正在执行研究"
             task.update_timestamp()
             
+            # 推送初始进度事件，让前端知道研究已开始
+            await self._push_progress(task, "研究计划已确认，开始执行研究...")
+            
             # 2. 为每个方向创建 Track
             tracks = []
             for direction_spec in plan.directions:
@@ -898,7 +1101,10 @@ class ResearchService:
             await self._push_completed(task, report)
             
             # 7. 后台异步生成 PDF（不阻塞用户查看报告）
-            asyncio.create_task(self._generate_pdf_background(task.id, report))
+            background_executor.submit(
+                self._generate_pdf_background(task.id, report),
+                task_id=f"pdf_{task.id}"
+            )
             
             logger.info(f"Research completed for task {task.id}")
             
@@ -1340,19 +1546,31 @@ class ResearchService:
     
     async def _push_progress(self, task: ResearchTaskModel, message: str):
         """推送进度更新"""
-        # 找到第一个 Track（用于路由）
+        # 判断是否有 track，选择不同的推送方式
         tracks = self._tracks.get(task.id, [])
-        track_id = tracks[0].track_id if tracks else ""
-        
-        await sse_gateway.push(
-            event_type="progress",
-            task_id=task.id,
-            track_id=track_id,
-            data={
-                "summary": message,
-                "progress_pct": 0,
-            },
-        )
+        if tracks:
+            # 有 track 时使用传统方式
+            track_id = tracks[0].track_id
+            await sse_gateway.push(
+                event_type="progress",
+                task_id=task.id,
+                track_id=track_id,
+                data={
+                    "summary": message,
+                    "progress_pct": 0,
+                },
+            )
+        else:
+            # 没有 track 时直接使用 session_id 推送
+            await sse_gateway.push_to_session(
+                event_type="progress",
+                task_id=task.id,
+                session_id=task.session_id,
+                data={
+                    "summary": message,
+                    "progress_pct": 0,
+                },
+            )
     
     async def _push_track_progress(
         self,
@@ -1379,31 +1597,37 @@ class ResearchService:
         questions: list[ClarificationQuestion],
     ):
         """推送需要澄清事件"""
-        tracks = self._tracks.get(task.id, [])
-        track_id = tracks[0].track_id if tracks else ""
-        
-        await sse_gateway.push(
+        # 澄清阶段没有 track，直接使用 session_id 推送
+        success = await sse_gateway.push_to_session(
             event_type="clarification_needed",
             task_id=task.id,
-            track_id=track_id,
+            session_id=task.session_id,
             data={
                 "questions": [q.to_dict() for q in questions],
             },
         )
+        
+        if success:
+            logger.info(f"[ResearchService] Pushed clarification event to session {task.session_id}")
+        else:
+            logger.error(f"[ResearchService] Failed to push clarification event to session {task.session_id}")
     
     async def _push_plan_generated(self, task: ResearchTaskModel, plan: ResearchPlanModel):
         """推送计划生成事件"""
-        tracks = self._tracks.get(task.id, [])
-        track_id = tracks[0].track_id if tracks else ""
-        
-        await sse_gateway.push(
+        # 计划生成阶段可能没有 track，使用 session_id 推送
+        success = await sse_gateway.push_to_session(
             event_type="plan_generated",
             task_id=task.id,
-            track_id=track_id,
+            session_id=task.session_id,
             data={
                 "directions": [d.to_dict() for d in plan.directions],
             },
         )
+        
+        if success:
+            logger.info(f"[ResearchService] Pushed plan event to session {task.session_id}")
+        else:
+            logger.error(f"[ResearchService] Failed to push plan event to session {task.session_id}")
     
     async def _push_completed(self, task: ResearchTaskModel, report: ResearchReportModel):
         """推送完成事件"""
@@ -1623,3 +1847,52 @@ class ResearchService:
 
         except Exception as e:
             logger.error(f"[ResearchService] Background PDF generation failed: {e}", exc_info=True)
+
+    # ============ 用户干预 ============
+
+    async def add_intervention(self, task_id: str, message: str) -> ResearchTaskModel:
+        """
+        添加用户干预消息
+
+        在研究执行过程中，用户可以发送干预消息来引导研究方向。
+
+        Args:
+            task_id: 任务 ID
+            message: 用户干预消息
+
+        Returns:
+            更新后的研究任务
+        """
+        task = self._get_task(task_id)
+
+        # 检查任务状态是否允许干预
+        if task.status not in [
+            ResearchStatus.EXECUTING,
+            ResearchStatus.ANALYZING,
+            ResearchStatus.PLANNING,
+        ]:
+            raise ResearchError(
+                f"Task {task_id} is not in a state that accepts interventions, "
+                f"current state: {task.status.value}"
+            )
+
+        # 添加干预消息
+        task.intervention_messages.append(message)
+        task.update_timestamp()
+
+        logger.info(f"[ResearchService] Added intervention to task {task_id}: {message[:50]}...")
+
+        # 推送干预确认事件
+        tracks = self._tracks.get(task_id, [])
+        track_id = tracks[0].track_id if tracks else ""
+        await sse_gateway.push(
+            event_type=SSEEventType.PROGRESS,
+            task_id=task_id,
+            track_id=track_id,
+            data={
+                "summary": f"用户干预: {message[:100]}",
+                "intervention_received": True,
+            },
+        )
+
+        return task

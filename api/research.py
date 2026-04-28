@@ -115,10 +115,107 @@ class UpdatePlanRequest(BaseModel):
 
 # ============ API 接口实现 ============
 
+@research_bp.route('/prepare', methods=['POST'])
+def prepare_research():
+    """
+    准备研究任务（两阶段启动模式 - 第一阶段）
+    
+    创建研究任务但不启动异步执行。前端需要：
+    1. 获取 task_id
+    2. 建立 SSE 连接（GET /events/{task_id}）
+    3. 调用 /start/{task_id} 启动执行
+    
+    这种设计确保 SSE 连接在异步任务执行前已建立，
+    避免澄清消息在连接建立前推送导致丢失。
+
+    Request Body:
+        query: 研究问题（必填）
+        mode: 研究模式 "standard" | "deep"（默认 standard）
+
+    Returns:
+        task_id: 任务ID
+        status: 当前状态（PENDING）
+        mode: 研究模式
+    """
+    try:
+        # 验证请求
+        data = request.json or {}
+        try:
+            req = StartResearchRequest(**data)
+        except ValidationError as e:
+            return jsonify({'error': str(e)}), 400
+
+        session_id = get_session_id()
+        service = get_research_service()
+
+        # 确定研究模式
+        mode = ResearchMode.DEEP if req.mode == "deep" else ResearchMode.STANDARD
+
+        # 准备任务（不启动执行）
+        task = run_async(service.prepare_task(
+            query=req.query,
+            mode=mode,
+            session_id=session_id,
+        ))
+
+        logger.info(f"[Research API] Task prepared: {task.id}, mode={mode.value}, session={session_id}")
+
+        return jsonify({
+            'status': 'ok',
+            'task_id': task.id,
+            'task_status': task.status.value,
+            'mode': task.mode.value,
+            'message': '研究任务已创建，等待启动'
+        })
+
+    except Exception as e:
+        logger.error(f"[Research API] Failed to prepare research: {e}", exc_info=True)
+        return jsonify({'error': f'准备研究任务失败: {str(e)}'}), 500
+
+
+@research_bp.route('/start/<task_id>', methods=['POST'])
+def start_research_by_id(task_id: str):
+    """
+    启动研究任务执行（两阶段启动模式 - 第二阶段）
+    
+    在前端建立 SSE 连接后调用此接口启动异步任务执行。
+    
+    Args:
+        task_id: 任务ID（由 /prepare 接口返回）
+
+    Returns:
+        task_id: 任务ID
+        status: 当前状态
+        mode: 研究模式
+    """
+    try:
+        service = get_research_service()
+
+        # 启动任务执行
+        task = run_async(service.execute_task(task_id))
+
+        logger.info(f"[Research API] Task started: {task_id}, mode={task.mode.value}")
+
+        return jsonify({
+            'status': 'ok',
+            'task_id': task.id,
+            'task_status': task.status.value,
+            'mode': task.mode.value,
+            'message': f'研究任务已启动，当前状态: {task.status.value}'
+        })
+
+    except ResearchError as e:
+        logger.warning(f"[Research API] Start research error: {e}")
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"[Research API] Failed to start research: {e}", exc_info=True)
+        return jsonify({'error': f'启动研究失败: {str(e)}'}), 500
+
+
 @research_bp.route('/start', methods=['POST'])
 def start_research():
     """
-    发起新的研究任务
+    发起新的研究任务（单阶段启动，向后兼容）
 
     Request Body:
         query: 研究问题（必填）
@@ -128,6 +225,11 @@ def start_research():
         task_id: 任务ID
         status: 当前状态
         mode: 研究模式
+        
+    注意：此接口存在 SSE 时序竞争问题，推荐使用：
+        1. POST /prepare
+        2. GET /events/{task_id}
+        3. POST /start/{task_id}
     """
     try:
         # 验证请求
@@ -208,6 +310,53 @@ def resume_research(task_id: str):
     except Exception as e:
         logger.error(f"[Research API] Failed to resume research: {e}", exc_info=True)
         return jsonify({'error': f'恢复研究失败: {str(e)}'}), 500
+
+
+@research_bp.route('/<task_id>/intervene', methods=['POST'])
+def intervene_research(task_id: str):
+    """
+    发送干预消息
+
+    在研究执行过程中，用户可以发送干预消息来引导研究方向。
+
+    Args:
+        task_id: 任务ID
+
+    Request Body:
+        message: 干预消息
+
+    Returns:
+        task_id: 任务ID
+        status: 当前状态
+    """
+    try:
+        # 验证请求
+        data = request.json or {}
+        message = data.get('message', '').strip()
+
+        if not message:
+            return jsonify({'error': '干预消息不能为空'}), 400
+
+        service = get_research_service()
+
+        # 添加干预消息
+        task = run_async(service.add_intervention(task_id, message))
+
+        logger.info(f"[Research API] Added intervention to task {task_id}")
+
+        return jsonify({
+            'status': 'ok',
+            'task_id': task.id,
+            'task_status': task.status.value,
+            'message': '干预消息已接收'
+        })
+
+    except ResearchError as e:
+        logger.warning(f"[Research API] Intervene research error: {e}")
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"[Research API] Failed to intervene research: {e}", exc_info=True)
+        return jsonify({'error': f'发送干预消息失败: {str(e)}'}), 500
 
 
 @research_bp.route('/<task_id>/cancel', methods=['POST'])
@@ -441,8 +590,14 @@ def research_events(task_id: str):
                         logger.info(f"[SSE] Received close signal for session {session_id}")
                         break
 
-                    # 发送消息
-                    yield message
+                    # 格式化消息为 SSE 格式
+                    # message 可能是 dict 或已经格式化的字符串
+                    if isinstance(message, dict):
+                        event_type = message.get('event', 'message')
+                        msg_data = json.dumps(message)
+                        yield f"event: {event_type}\ndata: {msg_data}\n\n"
+                    else:
+                        yield message
 
                 except Exception as e:
                     logger.error(f"[SSE] Error reading from queue: {e}")

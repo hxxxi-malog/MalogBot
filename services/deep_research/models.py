@@ -88,6 +88,7 @@ class ResearchTask:
     # 执行状态
     current_step: str = ""  # 当前步骤描述
     error_message: str = ""
+    intervention_messages: list[str] = field(default_factory=list)  # 用户干预消息
 
     # 时间戳
     started_at: Optional[datetime] = None
@@ -106,6 +107,7 @@ class ResearchTask:
             "clarification_questions": [q.to_dict() for q in self.clarification_questions],
             "current_step": self.current_step,
             "error_message": self.error_message,
+            "intervention_messages": self.intervention_messages,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -128,6 +130,7 @@ class ResearchTask:
             clarification_questions=questions,
             current_step=data.get("current_step", ""),
             error_message=data.get("error_message", ""),
+            intervention_messages=data.get("intervention_messages", []),
             started_at=datetime.fromisoformat(data["started_at"]) if data.get("started_at") else None,
             completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None,
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
