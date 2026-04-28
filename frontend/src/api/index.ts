@@ -11,6 +11,9 @@ import type {
   MCPServersResponse,
   MCPServer,
   TeamStatusResponse,
+  ResearchTask,
+  ResearchProgress,
+  DirectionSpec,
 } from '@/types'
 
 const BASE_URL = ''
@@ -297,4 +300,117 @@ export const teamApi = {
    * 获取团队模式状态
    */
   status: () => request<TeamStatusResponse>('/team/status'),
+}
+
+/**
+ * Research API - 深度研究接口
+ */
+export const researchApi = {
+  /**
+   * 准备研究任务（两阶段启动模式 - 第一阶段）
+   * 创建任务但不启动执行，返回 task_id
+   */
+  prepare: (query: string, mode: 'standard' | 'deep', signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, mode }),
+      signal,
+    }),
+
+  /**
+   * 启动研究任务执行（两阶段启动模式 - 第二阶段）
+   * 在 SSE 连接建立后调用
+   */
+  startWithTaskId: (taskId: string, signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/start/${taskId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  /**
+   * 发起研究（单阶段启动，向后兼容）
+   * 注意：存在 SSE 时序竞争问题，推荐使用 prepare + startWithTaskId
+   */
+  start: (query: string, mode: 'standard' | 'deep', signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, mode }),
+      signal,
+    }),
+
+  /**
+   * 恢复研究（回答澄清问题后）
+   */
+  resume: (taskId: string, answer: string, signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/${taskId}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer }),
+      signal,
+    }),
+
+  /**
+   * 取消研究
+   */
+  cancel: (taskId: string) =>
+    request<{ status: string }>(`/api/research/${taskId}/cancel`, { method: 'POST' }),
+
+  /**
+   * 获取研究状态
+   */
+  status: (taskId: string) =>
+    request<{ task: ResearchTask; progress: ResearchProgress }>(`/api/research/${taskId}/status`),
+
+  /**
+   * 获取研究计划
+   */
+  getPlan: (taskId: string) =>
+    request<{ plan: { id: string; directions: DirectionSpec[] } }>(`/api/research/${taskId}/plan`),
+
+  /**
+   * 修改研究计划
+   */
+  updatePlan: (taskId: string, directions: DirectionSpec[]) =>
+    request<{ plan: { id: string; directions: DirectionSpec[] } }>(`/api/research/${taskId}/plan`, {
+      method: 'PUT',
+      body: JSON.stringify({ directions }),
+    }),
+
+  /**
+   * 确认研究计划
+   */
+  confirmPlan: (taskId: string) =>
+    request<{ task: ResearchTask }>(`/api/research/${taskId}/confirm`, { method: 'POST' }),
+
+  /**
+   * SSE 事件流
+   */
+  events: (taskId: string, signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/${taskId}/events`, { signal }),
+
+  /**
+   * 获取历史研究列表
+   */
+  history: () =>
+    request<{ tasks: ResearchTask[] }>('/api/research/history'),
+
+  /**
+   * 下载报告
+   */
+  downloadReport: (taskId: string, format: 'markdown' | 'pdf' = 'markdown') =>
+    fetch(`${BASE_URL}/api/research/${taskId}/report/download?format=${format}`),
+
+  /**
+   * 发送干预消息（研究过程中）
+   */
+  intervene: (taskId: string, message: string, signal: AbortSignal) =>
+    fetch(`${BASE_URL}/api/research/${taskId}/intervene`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+      signal,
+    }),
 }

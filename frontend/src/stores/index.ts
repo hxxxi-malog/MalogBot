@@ -4,7 +4,7 @@
  */
 
 import { reactive, computed } from 'vue'
-import type { Session, Message, KnowledgeBase, MessageAttachments, TeamStatus } from '@/types'
+import type { Session, Message, KnowledgeBase, MessageAttachments, TeamStatus, ResearchProgress, ResearchPlanConfirmEvent, ClarificationQuestion } from '@/types'
 
 /**
  * 应用状态接口
@@ -20,6 +20,7 @@ interface AppState {
   settings: {
     webSearchEnabled: boolean
     knowledgeBaseId: string | null
+    researchMode: 'chat' | 'standard' | 'deep'  // 普通对话 | 标准研究 | 深度研究
   }
   // 聊天状态
   chat: {
@@ -32,6 +33,11 @@ interface AppState {
   // 知识库缓存
   knowledge: {
     list: KnowledgeBase[]
+  }
+  // 深度研究状态
+  research: {
+    taskId: string | null
+    isResearching: boolean
   }
 }
 
@@ -47,6 +53,7 @@ const store = reactive<AppState>({
   settings: {
     webSearchEnabled: false,
     knowledgeBaseId: null,
+    researchMode: 'chat',  // 默认普通对话
   },
   chat: {
     messages: [],
@@ -57,6 +64,10 @@ const store = reactive<AppState>({
   },
   knowledge: {
     list: [],
+  },
+  research: {
+    taskId: null,
+    isResearching: false,
   },
 })
 
@@ -103,6 +114,21 @@ export const messages = computed(() => store.chat.messages)
  * 是否处于引导模式
  */
 export const onboardingMode = computed(() => store.chat.onboardingMode)
+
+/**
+ * 研究模式
+ */
+export const researchMode = computed(() => store.settings.researchMode)
+
+/**
+ * 是否正在研究
+ */
+export const isResearching = computed(() => store.research.isResearching)
+
+/**
+ * 当前研究任务 ID
+ */
+export const researchTaskId = computed(() => store.research.taskId)
 
 // ==================== Session Actions ====================
 
@@ -304,6 +330,103 @@ export function setKnowledgeBaseId(id: string | null) {
  */
 export function setKnowledgeBases(list: KnowledgeBase[]) {
   store.knowledge.list = list
+}
+
+// ==================== Research Actions ====================
+
+/**
+ * 设置研究模式
+ */
+export function setResearchMode(mode: 'chat' | 'standard' | 'deep') {
+  store.settings.researchMode = mode
+}
+
+/**
+ * 设置研究任务 ID
+ */
+export function setResearchTaskId(taskId: string | null) {
+  store.research.taskId = taskId
+}
+
+/**
+ * 设置是否正在研究
+ */
+export function setResearching(value: boolean) {
+  store.research.isResearching = value
+}
+
+/**
+ * 更新研究进度
+ */
+export function updateResearchProgress(progress: ResearchProgress | undefined) {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.role === 'assistant') {
+    if (!lastMessage.attachments) {
+      lastMessage.attachments = {}
+    }
+    lastMessage.attachments = {
+      ...lastMessage.attachments,
+      researchProgress: progress
+    }
+    console.log('[Store] Research progress updated:', progress)
+  }
+}
+
+/**
+ * 设置研究计划确认
+ */
+export function setResearchPlan(plan: ResearchPlanConfirmEvent | undefined) {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.role === 'assistant') {
+    if (!lastMessage.attachments) {
+      lastMessage.attachments = {}
+    }
+    lastMessage.attachments = {
+      ...lastMessage.attachments,
+      researchPlan: plan
+    }
+    console.log('[Store] Research plan set:', plan)
+  }
+}
+
+/**
+ * 设置澄清问题
+ */
+export function setClarificationQuestions(taskId: string, questions: ClarificationQuestion[]) {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.role === 'assistant') {
+    if (!lastMessage.attachments) {
+      lastMessage.attachments = {}
+    }
+    lastMessage.attachments = {
+      ...lastMessage.attachments,
+      clarification: {
+        task_id: taskId,
+        questions: questions,
+      }
+    }
+    console.log('[Store] Clarification questions set:', questions.length, 'for task:', taskId)
+  }
+}
+
+/**
+ * 清除澄清问题
+ */
+export function clearClarification() {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.attachments?.clarification) {
+    delete lastMessage.attachments.clarification
+    console.log('[Store] Clarification cleared')
+  }
+}
+
+/**
+ * 清除研究状态
+ */
+export function clearResearch() {
+  store.research.taskId = null
+  store.research.isResearching = false
+  store.settings.researchMode = 'standard'
 }
 
 // ==================== Export Store ====================

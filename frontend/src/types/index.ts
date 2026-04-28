@@ -54,6 +54,155 @@ export interface TeamStatus {
   complexity_score?: number
 }
 
+// ============ 深度研究相关类型 ============
+
+// 研究模式
+export type ResearchMode = 'standard' | 'deep'
+
+// 研究状态
+export type ResearchStatus =
+  | 'pending'
+  | 'analyzing'
+  | 'pending_clarification'
+  | 'resumed'
+  | 'planning'
+  | 'pending_confirmation'
+  | 'confirmed'
+  | 'executing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+// 研究方向状态
+export type ResearchDirectionStatus =
+  | 'pending'
+  | 'exploring'
+  | 'analyzing'
+  | 'synthesizing'
+  | 'completed'
+  | 'failed'
+
+// 澄清问题
+export interface ClarificationQuestion {
+  question: string
+  options: string[]
+  answer?: string
+}
+
+// 澄清问题数据（包含 task_id）
+export interface ClarificationData {
+  task_id: string
+  questions: ClarificationQuestion[]
+}
+
+// 研究方向规格
+export interface DirectionSpec {
+  id: string
+  name: string
+  description: string
+  keywords: string[]
+  priority: number
+}
+
+// 研究任务
+export interface ResearchTask {
+  id: string
+  session_id: string
+  query: string
+  mode: ResearchMode
+  status: ResearchStatus
+  clarification_questions: ClarificationQuestion[]
+  current_step: string
+  error_message: string
+  started_at?: string
+  completed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+// 研究计划
+export interface ResearchPlan {
+  id: string
+  task_id: string
+  directions: DirectionSpec[]
+  is_confirmed: boolean
+  confirmed_at?: string
+}
+
+// 研究方向进度
+export interface ResearchDirectionProgress {
+  direction_id: string
+  direction_name: string
+  status: ResearchDirectionStatus
+  progress: number // 0-100
+  current_action: string
+  learnings_count: number
+  sources_count: number
+}
+
+// 研究进度状态
+export interface ResearchProgress {
+  task_id: string
+  status: ResearchStatus
+  mode: ResearchMode
+  progress_pct: number
+  elapsed_seconds: number
+  directions: ResearchDirectionProgress[]
+  current_action: string
+}
+
+// SSE 事件数据类型
+export interface ResearchProgressEvent {
+  step_index: number
+  step_total: number
+  status: string
+  current_action: string
+  progress_pct: number
+}
+
+export interface ResearchDirectionProgressEvent {
+  direction_id: string
+  direction_name: string
+  status: string
+  progress: number
+  current_action: string
+  learnings_count: number
+  sources_count: number
+}
+
+export interface ResearchClarificationEvent {
+  questions: ClarificationQuestion[]
+}
+
+export interface ResearchPlanConfirmEvent {
+  task_id: string
+  directions: DirectionSpec[]
+  estimated_time: string
+  can_modify: boolean
+}
+
+export interface ResearchCompletedEvent {
+  report_url: string
+  source_count: number
+  duration_seconds: number
+  word_count: number
+}
+
+// 研究完成附件数据（前端显示用）
+export interface ResearchCompletedData {
+  task_id: string
+  report_url?: string
+  source_count: number
+  duration_seconds: number
+}
+
+export interface ResearchErrorEvent {
+  error_code: string
+  error_message: string
+  recoverable: boolean
+  suggestion: string
+}
+
 // 消息附加组件类型
 export interface MessageAttachments {
   // 确认卡片
@@ -66,6 +215,14 @@ export interface MessageAttachments {
   teamPhase?: 'init' | 'running' | 'integrating' | 'done'
   // 整合内容
   integratingContent?: string
+  // 深度研究进度
+  researchProgress?: ResearchProgress
+  // 研究计划确认
+  researchPlan?: ResearchPlanConfirmEvent
+  // 澄清问题（包含 task_id）
+  clarification?: ClarificationData
+  // 研究完成（下载报告）
+  researchCompleted?: ResearchCompletedData
 }
 
 // 消息相关类型

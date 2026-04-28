@@ -5,8 +5,10 @@ import {
   store,
   webSearchEnabled,
   knowledgeBases,
+  researchMode,
   setWebSearchEnabled,
   setKnowledgeBaseId,
+  setResearchMode,
   setSessionId,
   clearMessages,
   addMessage,
@@ -35,10 +37,22 @@ const selectedKnowledgeBase = computed({
   },
 })
 
+// 研究模式下拉选择
+const selectedMode = computed({
+  get: () => researchMode.value,
+  set: (value: 'chat' | 'standard' | 'deep') => {
+    setResearchMode(value)
+    console.log('[WelcomePage] Research mode changed to:', value)
+  }
+})
+
+// 是否为研究模式（标准或深度）
+const isResearchMode = computed(() => researchMode.value !== 'chat')
+
 async function handleSend() {
   const text = inputText.value.trim()
   if (!text) return
-  console.log('[WelcomePage] Starting chat with message:', text.substring(0, 50) + '...')
+  console.log('[WelcomePage] Starting chat with message:', text.substring(0, 50) + '...', 'mode:', researchMode.value)
   emit('startChat', text)
   inputText.value = ''
 }
@@ -63,6 +77,16 @@ async function toggleWebSearch() {
     }
   }
 }
+
+// 快速切换深度研究（已移除，使用下拉选择）
+// function toggleDeepResearch() {
+//   if (researchMode.value === 'deep') {
+//     setResearchMode('chat')
+//   } else {
+//     setResearchMode('deep')
+//   }
+//   console.log('[WelcomePage] Deep research toggled:', researchMode.value)
+// }
 
 async function handleSelectSession(sessionId: string) {
   try {
@@ -146,7 +170,7 @@ function getSessionTitle(session: Session): string {
             v-model="inputText"
             type="text"
             class="input-field"
-            placeholder="输入您的问题，开始新对话..."
+            :placeholder="isResearchMode ? '输入您的研究问题...' : '输入您的问题，开始新对话...'"
             autocomplete="off"
             @keydown="handleKeydown"
           />
@@ -162,31 +186,48 @@ function getSessionTitle(session: Session): string {
 
         <!-- 选项栏 -->
         <div class="options-bar">
-          <!-- 联网搜索开关 -->
-          <button
-            class="option-btn"
-            :class="{ 'option-btn-active': webSearchEnabled }"
-            @click="toggleWebSearch"
-          >
-            <Globe class="w-4 h-4" />
-            <span>联网搜索</span>
-            <label class="toggle">
-              <input type="checkbox" :checked="webSearchEnabled" class="sr-only" @change="toggleWebSearch" />
-              <span class="toggle-track" :class="{ 'toggle-track-on': webSearchEnabled }">
-                <span class="toggle-thumb" :class="{ 'toggle-thumb-on': webSearchEnabled }" />
-              </span>
-            </label>
-          </button>
-
-          <!-- 知识库选择 -->
-          <div class="option-btn">
-            <BookOpen class="w-4 h-4" />
-            <select v-model="selectedKnowledgeBase" class="kb-select">
-              <option value="">不使用知识库</option>
-              <option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
-                {{ kb.name }} ({{ kb.document_count }}个文档)
-              </option>
+          <!-- 研究模式下拉选择器 -->
+          <div class="mode-selector">
+            <select v-model="selectedMode" class="mode-select">
+              <option value="chat">普通对话</option>
+              <option value="standard">标准研究</option>
+              <option value="deep">深度研究</option>
             </select>
+          </div>
+
+          <!-- 普通对话模式下显示联网搜索和知识库 -->
+          <template v-if="!isResearchMode">
+            <!-- 联网搜索开关 -->
+            <button
+              class="option-btn"
+              :class="{ 'option-btn-active': webSearchEnabled }"
+              @click="toggleWebSearch"
+            >
+              <Globe class="w-4 h-4" />
+              <span>联网搜索</span>
+              <label class="toggle">
+                <input type="checkbox" :checked="webSearchEnabled" class="sr-only" @change="toggleWebSearch" />
+                <span class="toggle-track" :class="{ 'toggle-track-on': webSearchEnabled }">
+                  <span class="toggle-thumb" :class="{ 'toggle-thumb-on': webSearchEnabled }" />
+                </span>
+              </label>
+            </button>
+
+            <!-- 知识库选择 -->
+            <div class="option-btn">
+              <BookOpen class="w-4 h-4" />
+              <select v-model="selectedKnowledgeBase" class="kb-select">
+                <option value="">不使用知识库</option>
+                <option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
+                  {{ kb.name }} ({{ kb.document_count }}个文档)
+                </option>
+              </select>
+            </div>
+          </template>
+
+          <!-- 研究模式下的提示 -->
+          <div v-else class="research-hint">
+            <span>研究过程中将自动联网搜索</span>
           </div>
         </div>
       </div>
@@ -433,8 +474,47 @@ function getSessionTitle(session: Session): string {
 .options-bar {
   display: flex;
   justify-content: center;
+  align-items: center;
   gap: 12px;
   margin-top: 14px;
+}
+
+/* 研究模式下拉选择器 */
+.mode-selector {
+  position: relative;
+}
+
+.mode-select {
+  padding: 8px 32px 8px 14px;
+  border-radius: 14px;
+  background: rgba(124, 58, 237, 0.1);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23c4b5fd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: all 200ms var(--ease-default);
+}
+
+.mode-select:hover {
+  background-color: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.mode-select:focus {
+  border-color: rgba(124, 58, 237, 0.5);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.1);
+}
+
+.mode-select option {
+  background: rgba(17, 24, 39, 0.95);
+  color: var(--text-primary);
+  padding: 8px;
 }
 
 .option-btn {
@@ -460,6 +540,71 @@ function getSessionTitle(session: Session): string {
   background: rgba(124, 58, 237, 0.15);
   border-color: rgba(124, 58, 237, 0.3);
   color: var(--primary-300);
+}
+
+/* 研究模式按钮（已废弃，使用下拉选择器） */
+/* .mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 200ms var(--ease-default);
+}
+
+.mode-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+.mode-btn-active {
+  background: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.3);
+  color: #a78bfa;
+}
+
+.mode-btn-active:hover {
+  background: rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+}
+
+.standard-btn.mode-btn-active {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: rgba(6, 182, 212, 0.3);
+  color: #67e8f9;
+}
+
+.standard-btn.mode-btn-active:hover {
+  background: rgba(6, 182, 212, 0.25);
+  color: #a5f3fc;
+}
+
+.deep-btn.mode-btn-active {
+  background: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.3);
+  color: #a78bfa;
+}
+
+.deep-btn.mode-btn-active:hover {
+  background: rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+}
+
+.mode-label {
+  font-size: 12px;
+} */
+
+/* 深度研究提示 */
+.research-hint {
+  font-size: 13px;
+  color: var(--text-faint);
+  padding: 8px 14px;
 }
 
 .kb-select {

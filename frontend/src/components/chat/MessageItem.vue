@@ -5,7 +5,11 @@ import { renderMarkdown, highlightCode } from '@/utils'
 import ConfirmationCard from './ConfirmationCard.vue'
 import RecursionLimitCard from './RecursionLimitCard.vue'
 import TeamProgressCard from './TeamProgressCard.vue'
-import type { Message } from '@/types'
+import ResearchProgressCard from './ResearchProgressCard.vue'
+import ClarificationCard from './ClarificationCard.vue'
+import PlanConfirmCard from './PlanConfirmCard.vue'
+import ResearchCompletedCard from './ResearchCompletedCard.vue'
+import type { Message, DirectionSpec } from '@/types'
 
 interface Props {
   message: Message
@@ -16,6 +20,12 @@ const emit = defineEmits<{
   (e: 'confirm', command: string, userMessage: string): void
   (e: 'cancel', command: string, userMessage: string): void
   (e: 'continue'): void
+  (e: 'research-cancel', taskId: string): void
+  (e: 'research-confirm-plan', taskId: string): void
+  (e: 'research-modify-plan', taskId: string, directions: DirectionSpec[]): void
+  (e: 'research-clarify', taskId: string, answers: Record<number, string>): void
+  (e: 'research-clarify-skip', taskId: string): void
+  (e: 'research-download', taskId: string, format: 'markdown' | 'pdf'): void
 }>()
 
 const contentRef = ref<HTMLElement | null>(null)
@@ -65,6 +75,52 @@ const teamStatus = computed(() => {
   }
 })
 
+// 是否有研究进度
+const hasResearchProgress = computed(() => {
+  return props.message.attachments?.researchProgress
+})
+
+// 研究进度
+const researchProgress = computed(() => {
+  return props.message.attachments?.researchProgress
+})
+
+// 是否有研究计划确认
+const hasResearchPlan = computed(() => {
+  return props.message.attachments?.researchPlan
+})
+
+// 研究计划
+const researchPlan = computed(() => {
+  return props.message.attachments?.researchPlan
+})
+
+// 是否有澄清问题
+const hasClarificationQuestions = computed(() => {
+  const clarification = props.message.attachments?.clarification
+  return clarification && clarification.questions && clarification.questions.length > 0
+})
+
+// 澄清问题数据
+const clarificationData = computed(() => {
+  return props.message.attachments?.clarification
+})
+
+// 澄清问题列表
+const clarificationQuestions = computed(() => {
+  return props.message.attachments?.clarification?.questions || []
+})
+
+// 是否有研究完成信息
+const hasResearchCompleted = computed(() => {
+  return props.message.attachments?.researchCompleted
+})
+
+// 研究完成数据
+const researchCompleted = computed(() => {
+  return props.message.attachments?.researchCompleted
+})
+
 // 高亮代码块
 watch(() => props.message.content, () => {
   nextTick(() => {
@@ -84,6 +140,44 @@ function handleCancel(command: string, userMessage: string) {
 
 function handleContinue() {
   emit('continue')
+}
+
+function handleResearchCancel() {
+  if (researchProgress.value?.task_id) {
+    emit('research-cancel', researchProgress.value.task_id)
+  }
+}
+
+function handleResearchConfirmPlan() {
+  const taskId = researchPlan.value?.task_id
+  if (taskId) {
+    emit('research-confirm-plan', taskId)
+  }
+}
+
+function handleResearchModifyPlan(directions: DirectionSpec[]) {
+  const taskId = researchPlan.value?.task_id
+  if (taskId) {
+    emit('research-modify-plan', taskId, directions)
+  }
+}
+
+function handleResearchClarify(answers: Record<number, string>) {
+  const taskId = clarificationData.value?.task_id
+  if (taskId) {
+    emit('research-clarify', taskId, answers)
+  }
+}
+
+function handleResearchClarifySkip() {
+  const taskId = clarificationData.value?.task_id
+  if (taskId) {
+    emit('research-clarify-skip', taskId)
+  }
+}
+
+function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
+  emit('research-download', taskId, format)
 }
 </script>
 
@@ -115,6 +209,41 @@ function handleContinue() {
         :phase="teamPhase"
         :integrating-content="integratingContent"
         class="attachment-card"
+      />
+
+      <!-- 研究进度卡片 -->
+      <ResearchProgressCard
+        v-if="hasResearchProgress && researchProgress"
+        :progress="researchProgress"
+        class="attachment-card"
+        @cancel="handleResearchCancel"
+      />
+
+      <!-- 研究计划确认卡片 -->
+      <PlanConfirmCard
+        v-if="hasResearchPlan && researchPlan"
+        :plan="researchPlan"
+        class="attachment-card"
+        @confirm="handleResearchConfirmPlan"
+        @modify="handleResearchModifyPlan"
+        @cancel="handleResearchCancel"
+      />
+
+      <!-- 澄清问题卡片 -->
+      <ClarificationCard
+        v-if="hasClarificationQuestions"
+        :questions="clarificationQuestions"
+        class="attachment-card"
+        @submit="handleResearchClarify"
+        @skip="handleResearchClarifySkip"
+      />
+
+      <!-- 研究完成卡片 -->
+      <ResearchCompletedCard
+        v-if="hasResearchCompleted && researchCompleted"
+        :data="researchCompleted"
+        class="attachment-card"
+        @download="handleResearchDownload"
       />
 
       <!-- 命令确认卡片 -->

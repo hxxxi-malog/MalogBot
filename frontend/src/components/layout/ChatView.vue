@@ -25,11 +25,22 @@ import {
   updateTeamStatus,
   setTeamPhase,
   setIntegratingContent,
+  researchMode,
+  isResearching,
+  researchTaskId,
+  setResearchMode,
+  setResearchTaskId,
+  setResearching,
+  updateResearchProgress,
+  setResearchPlan,
+  setClarificationQuestions,
+  clearClarification,
+  clearResearch,
 } from '@/stores'
-import { chatApi, sessionApi, webSearchApi, teamApi } from '@/api'
+import { chatApi, sessionApi, webSearchApi, teamApi, researchApi } from '@/api'
 import { useStream } from '@/composables/useStream'
 import { generateId } from '@/utils'
-// 不需要额外导入类型
+import type { DirectionSpec, ClarificationQuestion, ResearchProgress } from '@/types'
 
 const { streamEvents, abort, createAbortController, reset } = useStream()
 const inputText = ref('')
@@ -697,8 +708,580 @@ function handleKeydown(e: KeyboardEvent) {
 
 function handleSend() {
   const text = inputText.value.trim()
-  if (text && !isStreaming.value) {
+  if (!text) return
+
+  // 如果正在研究中，发送干预消息
+  if (isResearching.value && researchTaskId.value) {
+    sendResearchIntervention(text)
+    return
+  }
+
+  if (isStreaming.value) return
+
+  // 根据研究模式选择发送方式
+  if (researchMode.value === 'standard') {
+    // 标准研究模式
+    startResearch(text, 'standard')
+  } else if (researchMode.value === 'deep') {
+    // 深度研究模式
+    startResearch(text, 'deep')
+  } else {
+    // 普通对话
     sendMessage(text, false)
+  }
+}
+
+// 发送研究干预消息
+async function sendResearchIntervention(message: string) {
+  console.log('[ChatView] Sending research intervention:', message.substring(0, 50) + '...')
+
+  const taskId = researchTaskId.value
+  if (!taskId) {
+    console.error('[ChatView] No research task ID for intervention')
+    return
+  }
+
+  // 添加用户消息
+  addMessage({
+    id: generateId(),
+    role: 'user',
+    content: message,
+    timestamp: new Date().toISOString()
+  })
+  inputText.value = ''
+
+  const controller = createAbortController()
+  setAbortController(controller)
+
+  try {
+    // 第一步：POST /intervene 获取响应（JSON）
+    console.log('[ChatView] Step 1: Calling /intervene endpoint...')
+    const interveneResponse = await researchApi.intervene(taskId, message, controller.signal)
+
+    if (!interveneResponse.ok) {
+      console.error('[ChatView] Intervention failed:', interveneResponse.status)
+      updateLastMessage(`发送干预消息失败: ${interveneResponse.status} ${interveneResponse.statusText}`)
+      return
+    }
+
+    // 解析 JSON 响应
+    const interveneData = await interveneResponse.json() as { task_id?: string; status?: string; error?: string }
+    console.log('[ChatView] /intervene response:', interveneData)
+
+    if (!interveneData.task_id) {
+      console.error('[ChatView] No task_id in /intervene response:', interveneData)
+      updateLastMessage('发送干预消息失败: 未获取到任务ID')
+      return
+    }
+
+    updateLastMessage('干预消息已发送，正在连接事件流...')
+
+    // 第二步：GET /events 建立 SSE 连接
+    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
+    const eventsResponse = await researchApi.events(taskId, controller.signal)
+
+    if (!eventsResponse.ok) {
+      console.error('[ChatView] Events connection failed:', eventsResponse.status)
+      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
+      return
+    }
+
+    // 处理干预响应的事件流
+    for await (const event of streamEvents(eventsResponse)) {
+      if (!getAbortController()) break
+      handleResearchEvent(event)
+    }
+
+    console.log('[ChatView] Intervention processed')
+  } catch (error: unknown) {
+    console.error('[ChatView] Intervention error:', error)
+    if (error instanceof Error && error.name !== 'AbortError') {
+      updateLastMessage('发送干预消息失败: ' + error.message)
+    }
+  } finally {
+    setAbortController(null)
+    reset()
+  }
+}
+
+// 研究模式下拉选择
+const selectedMode = computed({
+  get: () => researchMode.value,
+  set: (value: 'chat' | 'standard' | 'deep') => {
+    setResearchMode(value)
+    console.log('[ChatView] Research mode changed to:', value)
+  }
+})
+
+// 循环切换模式（已废弃，使用下拉选择）
+// function cycleResearchMode() {
+//   const modes: Array<'chat' | 'standard' | 'deep'> = ['chat', 'standard', 'deep']
+//   const currentIndex = modes.indexOf(researchMode.value as 'chat' | 'standard' | 'deep')
+//   const nextIndex = (currentIndex + 1) % modes.length
+//   const newMode = modes[nextIndex]
+//   setResearchMode(newMode)
+//   console.log('[ChatView] Research mode cycled to:', newMode)
+// }
+
+// 快速切换深度研究（已废弃，使用下拉选择）
+// function toggleDeepResearch() {
+//   if (researchMode.value === 'deep') {
+//     setResearchMode('chat')
+//   } else {
+//     setResearchMode('deep')
+//   }
+//   console.log('[ChatView] Deep research toggled:', researchMode.value)
+// }
+
+// 开始研究（标准或深度）
+async function startResearch(query: string, mode: 'standard' | 'deep') {
+  console.log('[ChatView] Starting research:', mode, query.substring(0, 50) + '...')
+
+  // 重置累积内容
+  accumulatedContent = ''
+
+  if (!store.session.currentId) {
+    await createNewSession()
+  }
+
+  // 添加用户消息
+  addMessage({
+    id: generateId(),
+    role: 'user',
+    content: query,
+    timestamp: new Date().toISOString()
+  })
+  inputText.value = ''
+  setStreaming(true)
+  setResearching(true)
+
+  const controller = createAbortController()
+  setAbortController(controller)
+
+  try {
+    // 添加 AI 消息占位
+    addMessage({
+      id: generateId(),
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString()
+    })
+
+    // 第一步：POST /start 获取 task_id（JSON 响应）
+    console.log('[ChatView] Step 1: Calling /start endpoint with mode:', mode)
+    const startResponse = await researchApi.start(query, mode, controller.signal)
+
+    if (!startResponse.ok) {
+      console.error('[ChatView] Research start failed:', startResponse.status)
+      updateLastMessage(`研究启动失败: ${startResponse.status} ${startResponse.statusText}`)
+      return
+    }
+
+    // 解析 JSON 响应，提取 task_id
+    const startData = await startResponse.json() as { task_id?: string; status?: string; error?: string }
+    console.log('[ChatView] /start response:', startData)
+
+    if (!startData.task_id) {
+      console.error('[ChatView] No task_id in /start response:', startData)
+      updateLastMessage('研究启动失败: 未获取到任务ID')
+      return
+    }
+
+    const taskId = startData.task_id
+    console.log('[ChatView] Got task_id:', taskId)
+
+    // 提前设置 task_id，确保后续事件处理可用
+    setResearchTaskId(taskId)
+    updateLastMessage(mode === 'deep' ? '研究任务已创建，正在分析问题...' : '研究任务已创建，正在搜索分析...')
+
+    // 第二步：GET /events 建立 SSE 连接
+    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
+    const eventsResponse = await researchApi.events(taskId, controller.signal)
+
+    if (!eventsResponse.ok) {
+      console.error('[ChatView] Events connection failed:', eventsResponse.status)
+      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
+      return
+    }
+
+    // 处理研究 SSE 事件
+    for await (const event of streamEvents(eventsResponse)) {
+      if (!getAbortController()) {
+        console.log('[ChatView] Research stream aborted')
+        break
+      }
+      handleResearchEvent(event)
+    }
+
+    console.log('[ChatView] Research stream completed')
+  } catch (error: unknown) {
+    console.error('[ChatView] Research error:', error)
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        console.log('[ChatView] Research aborted by user')
+      } else {
+        updateLastMessage(`研究出错: ${error.message}`)
+      }
+    } else {
+      updateLastMessage('研究出错，请重试')
+    }
+  } finally {
+    setStreaming(false)
+    setAbortController(null)
+    reset()
+  }
+
+  await loadSessions()
+}
+
+// 处理研究事件
+function handleResearchEvent(event: { type: string; [key: string]: unknown }) {
+  console.log('[ChatView] Research event:', event.type, event)
+  
+  switch (event.type) {
+    // 研究任务创建
+    case 'research_task_created':
+      if (event.task_id) {
+        setResearchTaskId(event.task_id as string)
+      }
+      updateLastMessage('正在分析您的问题...')
+      break
+    
+    // 分析中
+    case 'research_analyzing':
+      updateLastMessage('正在深度分析您的问题...')
+      break
+    
+    // 需要澄清
+    case 'research_clarification_needed':
+      if (event.questions && event.task_id) {
+        setClarificationQuestions(event.task_id as string, event.questions as ClarificationQuestion[])
+      }
+      break
+    
+    // 研究计划生成
+    case 'research_plan_generated':
+      if (event.task_id && event.directions) {
+        setResearchPlan({
+          task_id: event.task_id as string,
+          directions: event.directions as DirectionSpec[],
+          estimated_time: (event.estimated_time as string) || '约 2-5 分钟',
+          can_modify: (event.can_modify as boolean) !== false,
+        })
+        updateLastMessage('研究计划已生成，请确认后开始研究')
+      }
+      break
+    
+    // 研究进度更新
+    case 'research_progress':
+      // 后端推送的是 summary 和 progress_pct，不是 progress
+      if (event.summary) {
+        updateLastMessage(event.summary as string)
+      }
+      if (event.progress) {
+        updateResearchProgress(event.progress as ResearchProgress)
+      }
+      break
+    
+    // 研究方向进度
+    case 'research_direction_progress':
+      // 更新研究进度中的方向信息
+      if (event.direction_progress) {
+        const currentProgress = store.chat.messages[store.chat.messages.length - 1]?.attachments?.researchProgress
+        if (currentProgress && event.direction_progress) {
+          const dirProgress = event.direction_progress as { direction_id: string; direction_name: string; status: string; progress: number; current_action: string; learnings_count: number; sources_count: number }
+          const updatedDirections = currentProgress.directions.map(d => 
+            d.direction_id === dirProgress.direction_id ? { ...d, ...dirProgress } as typeof d : d
+          )
+          updateResearchProgress({ ...currentProgress, directions: updatedDirections })
+        }
+      }
+      break
+    
+    // 研究完成
+    case 'research_completed':
+      console.log('[ChatView] Research completed')
+      stopTeamPolling()
+      if (event.content) {
+        updateLastMessage(event.content as string)
+      }
+      // 更新消息附件，添加下载按钮
+      if (event.task_id) {
+        updateLastMessageAttachments({
+          researchCompleted: {
+            task_id: event.task_id as string,
+            report_url: event.report_url as string | undefined,
+            source_count: (event.source_count as number) || 0,
+            duration_seconds: (event.duration_seconds as number) || 0,
+          }
+        })
+      }
+      clearResearch()
+      break
+    
+    // 研究错误
+    case 'research_error':
+      console.error('[ChatView] Research error event:', event)
+      const errorMsg = (event.error_message as string) || '研究过程中发生错误'
+      if (accumulatedContent) {
+        updateLastMessage(accumulatedContent + '\n\n' + errorMsg)
+      } else {
+        updateLastMessage(errorMsg)
+      }
+      clearResearch()
+      break
+    
+    // 内容输出
+    case 'content':
+      if (typeof event.accumulated === 'string') {
+        accumulatedContent = event.accumulated
+        updateLastMessage(accumulatedContent)
+      } else if (typeof event.content === 'string') {
+        accumulatedContent += event.content
+        updateLastMessage(accumulatedContent)
+      }
+      break
+    
+    // 完成
+    case 'done':
+      if (typeof event.content === 'string' && event.content) {
+        updateLastMessage(event.content)
+      } else if (accumulatedContent) {
+        updateLastMessage(accumulatedContent)
+      }
+      break
+    
+    // 默认处理
+    default:
+      console.log('[ChatView] Unknown research event:', event.type)
+  }
+}
+
+// 取消研究
+async function handleResearchCancel(taskId: string) {
+  console.log('[ChatView] Cancelling research:', taskId)
+  try {
+    await researchApi.cancel(taskId)
+    clearResearch()
+    updateLastMessage('研究已取消')
+  } catch (error) {
+    console.error('[ChatView] Cancel research error:', error)
+  }
+  setStreaming(false)
+  setAbortController(null)
+}
+
+// 确认研究计划
+async function handleResearchConfirmPlan(taskId: string) {
+  console.log('[ChatView] Confirming research plan:', taskId)
+  
+  // 清除计划卡片
+  setResearchPlan(undefined)
+  setStreaming(true)
+  
+  const controller = createAbortController()
+  setAbortController(controller)
+  
+  try {
+    // ========== 两阶段模式：先建立 SSE 连接，再确认计划 ==========
+    // 阶段1：建立 SSE 连接
+    console.log('[ChatView] Phase 1: Establishing SSE connection...')
+    const eventResponse = await researchApi.events(taskId, controller.signal)
+    console.log('[ChatView] SSE connection established')
+    
+    // 阶段2：确认计划（会启动异步任务）
+    console.log('[ChatView] Phase 2: Confirming plan...')
+    const response = await researchApi.confirmPlan(taskId)
+    console.log('[ChatView] Plan confirmed:', response)
+    
+    updateLastMessage('研究计划已确认，开始执行研究...')
+    
+    // 处理研究事件
+    for await (const event of streamEvents(eventResponse)) {
+      if (!getAbortController()) break
+      handleResearchEvent(event)
+    }
+  } catch (error) {
+    console.error('[ChatView] Confirm plan error:', error)
+    if (error instanceof Error) {
+      updateLastMessage('确认计划失败: ' + error.message)
+    }
+  } finally {
+    setStreaming(false)
+    setAbortController(null)
+    reset()
+  }
+}
+
+// 修改研究计划
+async function handleResearchModifyPlan(taskId: string, directions: DirectionSpec[]) {
+  console.log('[ChatView] Modifying research plan:', taskId, directions)
+  
+  try {
+    await researchApi.updatePlan(taskId, directions)
+    // 修改成功后直接确认
+    await handleResearchConfirmPlan(taskId)
+  } catch (error) {
+    console.error('[ChatView] Modify plan error:', error)
+    if (error instanceof Error) {
+      updateLastMessage('修改计划失败: ' + error.message)
+    }
+  }
+}
+
+// 回答澄清问题
+async function handleResearchClarify(taskId: string, answers: Record<number, string>) {
+  console.log('[ChatView] Submitting clarification answers:', taskId, answers)
+
+  // 清除澄清问题卡片
+  clearClarification()
+  setStreaming(true)
+
+  const controller = createAbortController()
+  setAbortController(controller)
+
+  try {
+    // 将答案组合成文本
+    const answerText = Object.entries(answers)
+      .map(([idx, ans]) => `Q${parseInt(idx) + 1}: ${ans}`)
+      .join('\n')
+
+    // 第一步：POST /resume 获取响应（JSON）
+    console.log('[ChatView] Step 1: Calling /resume endpoint...')
+    const resumeResponse = await researchApi.resume(taskId, answerText, controller.signal)
+
+    if (!resumeResponse.ok) {
+      console.error('[ChatView] Resume failed:', resumeResponse.status)
+      updateLastMessage(`恢复研究失败: ${resumeResponse.status} ${resumeResponse.statusText}`)
+      return
+    }
+
+    // 解析 JSON 响应
+    const resumeData = await resumeResponse.json() as { task_id?: string; status?: string; error?: string }
+    console.log('[ChatView] /resume response:', resumeData)
+
+    if (!resumeData.task_id) {
+      console.error('[ChatView] No task_id in /resume response:', resumeData)
+      updateLastMessage('恢复研究失败: 未获取到任务ID')
+      return
+    }
+
+    // 清空之前的内容
+    accumulatedContent = ''
+    updateLastMessage('研究已恢复，正在连接事件流...')
+
+    // 第二步：GET /events 建立 SSE 连接
+    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
+    const eventsResponse = await researchApi.events(taskId, controller.signal)
+
+    if (!eventsResponse.ok) {
+      console.error('[ChatView] Events connection failed:', eventsResponse.status)
+      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
+      return
+    }
+
+    for await (const event of streamEvents(eventsResponse)) {
+      if (!getAbortController()) break
+      handleResearchEvent(event)
+    }
+  } catch (error) {
+    console.error('[ChatView] Clarify error:', error)
+    if (error instanceof Error) {
+      updateLastMessage('提交答案失败: ' + error.message)
+    }
+  } finally {
+    setStreaming(false)
+    setAbortController(null)
+    reset()
+  }
+}
+
+// 跳过澄清问题
+async function handleResearchClarifySkip(taskId: string) {
+  console.log('[ChatView] Skipping clarification:', taskId)
+
+  // 清除澄清问题卡片
+  clearClarification()
+  setStreaming(true)
+
+  const controller = createAbortController()
+  setAbortController(controller)
+
+  try {
+    // 第一步：POST /resume 获取响应（JSON）
+    console.log('[ChatView] Step 1: Calling /resume endpoint (skip)...')
+    const resumeResponse = await researchApi.resume(taskId, '使用默认设置继续', controller.signal)
+
+    if (!resumeResponse.ok) {
+      console.error('[ChatView] Resume (skip) failed:', resumeResponse.status)
+      updateLastMessage(`继续研究失败: ${resumeResponse.status} ${resumeResponse.statusText}`)
+      return
+    }
+
+    // 解析 JSON 响应
+    const resumeData = await resumeResponse.json() as { task_id?: string; status?: string; error?: string }
+    console.log('[ChatView] /resume (skip) response:', resumeData)
+
+    accumulatedContent = ''
+    updateLastMessage('研究已恢复，正在连接事件流...')
+
+    // 第二步：GET /events 建立 SSE 连接
+    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
+    const eventsResponse = await researchApi.events(taskId, controller.signal)
+
+    if (!eventsResponse.ok) {
+      console.error('[ChatView] Events connection failed:', eventsResponse.status)
+      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
+      return
+    }
+
+    for await (const event of streamEvents(eventsResponse)) {
+      if (!getAbortController()) break
+      handleResearchEvent(event)
+    }
+  } catch (error) {
+    console.error('[ChatView] Skip clarification error:', error)
+    if (error instanceof Error) {
+      updateLastMessage('继续研究失败: ' + error.message)
+    }
+  } finally {
+    setStreaming(false)
+    setAbortController(null)
+    reset()
+  }
+}
+
+// 下载研究报告
+async function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
+  console.log('[ChatView] Downloading research report:', taskId, format)
+  try {
+    const response = await researchApi.downloadReport(taskId, format)
+    if (!response.ok) {
+      console.error('[ChatView] Download failed:', response.status)
+      return
+    }
+    // 获取文件名
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let filename = `research-report-${taskId}.${format === 'pdf' ? 'pdf' : 'md'}`
+    if (contentDisposition) {
+      const match = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (match) {
+        filename = match[1]
+      }
+    }
+    // 下载文件
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    console.log('[ChatView] Report downloaded:', filename)
+  } catch (error) {
+    console.error('[ChatView] Download error:', error)
   }
 }
 
@@ -742,70 +1325,93 @@ watch(messages, () => {
       @confirm="handleConfirm"
       @cancel="handleCancel"
       @continue="handleContinue"
+      @research-cancel="handleResearchCancel"
+      @research-confirm-plan="handleResearchConfirmPlan"
+      @research-modify-plan="handleResearchModifyPlan"
+      @research-clarify="handleResearchClarify"
+      @research-clarify-skip="handleResearchClarifySkip"
+      @research-download="handleResearchDownload"
     />
 
     <!-- 输入区域 -->
     <footer class="chat-footer">
       <div class="input-bar">
-        <!-- 联网搜索开关 -->
-        <button
-          class="option-btn"
-          :class="{ 'option-btn-active': webSearchEnabled }"
-          @click="() => toggleWebSearch()"
-        >
-          <Globe class="w-4 h-4" />
-          <span>联网搜索</span>
-          <label class="toggle">
-            <input type="checkbox" :checked="webSearchEnabled" class="sr-only" @change="() => toggleWebSearch()" />
-            <span class="toggle-track" :class="{ 'toggle-track-on': webSearchEnabled }">
-              <span class="toggle-thumb" :class="{ 'toggle-thumb-on': webSearchEnabled }" />
-            </span>
-          </label>
-        </button>
-
-        <!-- 知识库选择 -->
-        <div class="option-btn">
-          <BookOpen class="w-4 h-4" />
-          <select
-            v-model="selectedKnowledgeBase"
-            class="kb-select"
-          >
-            <option value="">不使用知识库</option>
-            <option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
-              {{ kb.name }} ({{ kb.document_count }}个文档)
-            </option>
+        <!-- 研究模式下拉选择器 -->
+        <div class="mode-selector">
+          <select v-model="selectedMode" class="mode-select">
+            <option value="chat">普通对话</option>
+            <option value="standard">标准研究</option>
+            <option value="deep">深度研究</option>
           </select>
         </div>
 
-        <!-- 输入框和按钮 -->
-        <div class="input-group">
-          <input
-            v-model="inputText"
-            type="text"
-            class="input-field"
-            :class="{ 'input-field-focused': inputText }"
-            placeholder="输入消息..."
-            autocomplete="off"
-            :disabled="isStreaming"
-            @keydown="handleKeydown"
-          />
+        <!-- 联网搜索和知识库只在普通对话模式显示 -->
+        <template v-if="researchMode === 'chat'">
+          <!-- 联网搜索开关 -->
           <button
-            v-if="!isStreaming"
-            class="send-btn"
-            :disabled="!inputText.trim()"
-            @click="handleSend"
+            class="option-btn"
+            :class="{ 'option-btn-active': webSearchEnabled }"
+            @click="() => toggleWebSearch()"
           >
-            <Send class="w-4 h-4" />
+            <Globe class="w-4 h-4" />
+            <span>联网搜索</span>
+            <label class="toggle">
+              <input type="checkbox" :checked="webSearchEnabled" class="sr-only" @change="() => toggleWebSearch()" />
+              <span class="toggle-track" :class="{ 'toggle-track-on': webSearchEnabled }">
+                <span class="toggle-thumb" :class="{ 'toggle-thumb-on': webSearchEnabled }" />
+              </span>
+            </label>
           </button>
-          <button
-            v-else
-            class="stop-btn"
-            @click="stopGeneration"
-          >
-            <Square class="w-3.5 h-3.5" />
-            <span>停止</span>
-          </button>
+
+          <!-- 知识库选择 -->
+          <div class="option-btn">
+            <BookOpen class="w-4 h-4" />
+            <select
+              v-model="selectedKnowledgeBase"
+              class="kb-select"
+            >
+              <option value="">不使用知识库</option>
+              <option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
+                {{ kb.name }} ({{ kb.document_count }}个文档)
+              </option>
+            </select>
+          </div>
+        </template>
+
+        <!-- 研究模式提示 -->
+        <div v-if="researchMode !== 'chat'" class="research-hint">
+          <span>研究过程中将自动联网搜索</span>
         </div>
+      </div>
+
+      <!-- 输入框和按钮 -->
+      <div class="input-group">
+        <input
+          v-model="inputText"
+          type="text"
+          class="input-field"
+          :class="{ 'input-field-focused': inputText }"
+          placeholder="输入消息..."
+          autocomplete="off"
+          :disabled="isStreaming"
+          @keydown="handleKeydown"
+        />
+        <button
+          v-if="!isStreaming"
+          class="send-btn"
+          :disabled="!inputText.trim()"
+          @click="handleSend"
+        >
+          <Send class="w-4 h-4" />
+        </button>
+        <button
+          v-else
+          class="stop-btn"
+          @click="stopGeneration"
+        >
+          <Square class="w-3.5 h-3.5" />
+          <span>停止</span>
+        </button>
       </div>
     </footer>
   </div>
@@ -939,6 +1545,13 @@ watch(messages, () => {
   color: var(--primary-300);
 }
 
+/* 研究模式按钮特殊样式 */
+.research-mode-btn.option-btn-active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
+  border-color: rgba(139, 92, 246, 0.35);
+  color: #C4B5FD;
+}
+
 .kb-select {
   border: none;
   background: transparent;
@@ -993,6 +1606,108 @@ watch(messages, () => {
   display: flex;
   gap: 10px;
   min-width: 220px;
+}
+
+/* Sparkles 功能按钮 */
+/* 研究模式下拉选择器 */
+.mode-selector {
+  position: relative;
+}
+
+.mode-select {
+  padding: 8px 32px 8px 14px;
+  border-radius: 12px;
+  background: rgba(124, 58, 237, 0.1);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23c4b5fd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: all 200ms var(--ease-default);
+}
+
+.mode-select:hover {
+  background-color: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.mode-select:focus {
+  border-color: rgba(124, 58, 237, 0.5);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.1);
+}
+
+.mode-select option {
+  background: rgba(17, 24, 39, 0.95);
+  color: var(--text-primary);
+  padding: 8px;
+}
+
+/* 模式按钮（已废弃，使用下拉选择器） */
+/* .mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 200ms var(--ease-default);
+}
+
+.mode-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+.mode-btn-active {
+  background: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.3);
+  color: #a78bfa;
+}
+
+.mode-btn-active:hover {
+  background: rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+}
+
+.standard-btn.mode-btn-active {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: rgba(6, 182, 212, 0.3);
+  color: #67e8f9;
+}
+
+.standard-btn.mode-btn-active:hover {
+  background: rgba(6, 182, 212, 0.25);
+  color: #a5f3fc;
+}
+
+.deep-btn.mode-btn-active {
+  background: rgba(124, 58, 237, 0.15);
+  border-color: rgba(124, 58, 237, 0.3);
+  color: #a78bfa;
+}
+
+.deep-btn.mode-btn-active:hover {
+  background: rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+}
+
+.mode-label {
+  font-size: 12px;
+} */
+
+/* 研究模式提示 */
+.research-hint {
+  font-size: 13px;
+  color: var(--text-faint);
+  padding: 8px 14px;
 }
 
 .input-field {

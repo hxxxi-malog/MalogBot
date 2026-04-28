@@ -2,7 +2,7 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import { Bot } from 'lucide-vue-next'
 import MessageItem from './MessageItem.vue'
-import type { Message } from '@/types'
+import type { Message, DirectionSpec } from '@/types'
 
 interface Props {
   messages: Message[]
@@ -14,6 +14,12 @@ const emit = defineEmits<{
   (e: 'confirm', command: string, userMessage: string): void
   (e: 'cancel', command: string, userMessage: string): void
   (e: 'continue'): void
+  (e: 'research-cancel', taskId: string): void
+  (e: 'research-confirm-plan', taskId: string): void
+  (e: 'research-modify-plan', taskId: string, directions: DirectionSpec[]): void
+  (e: 'research-clarify', taskId: string, answers: Record<number, string>): void
+  (e: 'research-clarify-skip', taskId: string): void
+  (e: 'research-download', taskId: string, format: 'markdown' | 'pdf'): void
 }>()
 
 const listRef = ref<HTMLElement | null>(null)
@@ -31,6 +37,9 @@ const showTypingIndicator = computed(() => {
   // 如果处于团队模式（有 teamPhase），不显示打字指示器
   // 因为团队模式有自己的进度展示
   if (lastMessage.attachments?.teamPhase) return false
+  
+  // 如果处于研究模式（有 researchProgress），不显示打字指示器
+  if (lastMessage.attachments?.researchProgress) return false
   
   // 如果最后一条是用户消息，显示打字指示器
   if (lastMessage.role === 'user') return true
@@ -61,6 +70,30 @@ function handleCancel(command: string, userMessage: string) {
 function handleContinue() {
   emit('continue')
 }
+
+function handleResearchCancel(taskId: string) {
+  emit('research-cancel', taskId)
+}
+
+function handleResearchConfirmPlan(taskId: string) {
+  emit('research-confirm-plan', taskId)
+}
+
+function handleResearchModifyPlan(taskId: string, directions: DirectionSpec[]) {
+  emit('research-modify-plan', taskId, directions)
+}
+
+function handleResearchClarify(taskId: string, answers: Record<number, string>) {
+  emit('research-clarify', taskId, answers)
+}
+
+function handleResearchClarifySkip(taskId: string) {
+  emit('research-clarify-skip', taskId)
+}
+
+function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
+  emit('research-download', taskId, format)
+}
 </script>
 
 <template>
@@ -73,6 +106,12 @@ function handleContinue() {
       @confirm="handleConfirm"
       @cancel="handleCancel"
       @continue="handleContinue"
+      @research-cancel="handleResearchCancel"
+      @research-confirm-plan="handleResearchConfirmPlan"
+      @research-modify-plan="handleResearchModifyPlan"
+      @research-clarify="handleResearchClarify"
+      @research-clarify-skip="handleResearchClarifySkip"
+      @research-download="handleResearchDownload"
     />
 
     <!-- 打字指示器 -->

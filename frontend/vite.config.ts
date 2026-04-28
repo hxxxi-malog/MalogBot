@@ -29,6 +29,7 @@ export default defineConfig({
       '/documents': 'http://localhost:5000',
       '/mcp': 'http://localhost:5000',
       '/team': 'http://localhost:5000',
+      '/api': 'http://localhost:5000',  // 研究相关 API
     }
   },
   build: {
