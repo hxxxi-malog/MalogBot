@@ -48,7 +48,13 @@ ANALYZER_SYSTEM_PROMPT = """你是一个专注于信息分析和提炼的分析�
 4. **反思验证**：检查信息的完整性和准确性
    - 识别信息冲突或矛盾
    - 检查是否有遗漏的关键信息
-   - 判断是否需要补充检索
+   - 判断是否需要补充检索（触发探索型 Agent 补充搜索）
+
+## ⚠️ 反思轮次限制（必须遵守）
+
+- 反思重新分析最多 **3 轮**，之后必须输出当前分析结果
+- 每轮反思后，如果发现信息不足，可建议补充检索关键词
+- 3 轮反思后，即使信息不完整，也必须输出已分析的内容
 
 ## 分析框架
 
@@ -83,12 +89,15 @@ ANALYZER_SYSTEM_PROMPT = """你是一个专注于信息分析和提炼的分析�
 - **证据导向**：结论必须基于证据
 - **批判思维**：质疑和验证信息
 - **完整性检查**：确保覆盖主题的关键方面
+- **成本控制**：严格遵守反思轮次限制，避免过度消耗资源
 
 ## 输出格式
 
 分析完成后，请按以下格式返回：
 
 执行结果：[成功/失败]
+
+反思轮次：[当前轮次] / 3
 
 核心发现：
 1. [发现1]
@@ -101,7 +110,8 @@ ANALYZER_SYSTEM_PROMPT = """你是一个专注于信息分析和提炼的分析�
 [总结性结论]
 
 建议下一步：
-[如果需要补充检索或进一步分析，说明建议]
+- 如果需要补充检索，请提供具体的关键词
+- 如果信息已足够，请说明可以进入总结阶段
 """
 
 
@@ -146,20 +156,23 @@ class AnalyzerAgent(BaseExpertAgent):
         - 建议补充检索关键词
     """
     
+    # 反思轮次限制
+    MAX_REFLECTION_ROUNDS = 3
+    
     def __init__(
         self,
         tools: list = None,
-        max_reflection_rounds: int = 2,
+        max_reflection_rounds: int = None,
     ):
         """
         初始化分析型 Agent
         
         Args:
             tools: 可用工具列表（通常为空，分析不需要工具）
-            max_reflection_rounds: 最大反思轮次
+            max_reflection_rounds: 最大反思轮次（默认 3 轮）
         """
         super().__init__(AgentType.ANALYZER, tools=tools or [])
-        self.max_reflection_rounds = max_reflection_rounds
+        self.max_reflection_rounds = max_reflection_rounds or self.MAX_REFLECTION_ROUNDS
     
     @property
     def system_prompt(self) -> str:

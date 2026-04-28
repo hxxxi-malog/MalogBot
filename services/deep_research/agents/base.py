@@ -116,11 +116,15 @@ class BaseExpertAgent(ABC):
         result = agent.execute(context)
     """
     
+    # 默认工具调用限制
+    DEFAULT_MAX_TOOL_CALLS = 50
+    
     def __init__(
         self,
         agent_type: AgentType,
         tools: list = None,
         recursion_limit: int = 500,
+        max_tool_calls: int = None,
     ):
         """
         初始化专家型 Agent
@@ -129,10 +133,12 @@ class BaseExpertAgent(ABC):
             agent_type: Agent 类型
             tools: 可用工具列表
             recursion_limit: LangGraph 递归限制
+            max_tool_calls: 最大工具调用次数（None 使用默认值）
         """
         self.agent_type = agent_type
         self.tools = tools or []
         self.recursion_limit = recursion_limit
+        self.max_tool_calls = max_tool_calls or self.DEFAULT_MAX_TOOL_CALLS
         
         # LLM 和 Agent 实例（延迟初始化）
         self._llm = None
@@ -144,7 +150,7 @@ class BaseExpertAgent(ABC):
         self._total_executions = 0
         self._successful_executions = 0
         
-        logger.debug(f"Created {agent_type.value} agent")
+        logger.debug(f"Created {agent_type.value} agent with max_tool_calls={self.max_tool_calls}")
     
     def _ensure_initialized(self) -> bool:
         """
@@ -311,6 +317,23 @@ class BaseExpertAgent(ABC):
             
             # 提取工具调用信息
             tool_calls = self._extract_tool_calls(result)
+            
+            # 检查工具调用次数是否超限
+            if len(tool_calls) > self.max_tool_calls:
+                logger.warning(
+                    f"{self.agent_type.value} agent exceeded max_tool_calls limit: "
+                    f"{len(tool_calls)} > {self.max_tool_calls}"
+                )
+                return False, {
+                    "error": f"工具调用次数超限（{len(tool_calls)} > {self.max_tool_calls}），已强制终止",
+                    "error_type": "tool_call_limit_exceeded",
+                    "final_message": final_message,
+                    "tool_calls": tool_calls[:self.max_tool_calls],  # 只保留限制内的调用
+                }
+            
+            logger.info(
+                f"{self.agent_type.value} agent completed with {len(tool_calls)} tool calls"
+            )
             
             return True, {
                 "final_message": final_message,

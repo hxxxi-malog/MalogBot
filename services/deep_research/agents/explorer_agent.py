@@ -50,18 +50,29 @@ EXPLORER_SYSTEM_PROMPT = """你是一个专注于信息搜索和发现的探索�
    - 提取正文内容
    - 保留关键结构信息
 
+## ⚠️ 严格限制（必须遵守）
+
+**搜索次数限制**：每轮研究最多执行 15 次搜索操作
+- 在达到 12 次搜索时，应该开始整理已有信息
+- 达到 15 次搜索后，必须停止搜索并总结已获取的信息
+- 不要为了追求完美而超过限制
+
 ## 执行原则
 
 - **向目标收束**：搜索结果必须与研究主题相关
 - **避免重复**：已搜索的关键词和已访问的 URL 不要重复
 - **质量优先**：优先获取权威、可靠的信息来源
 - **广度覆盖**：多维度搜索，覆盖主题的不同方面
+- **成本控制**：严格遵守搜索次数限制，避免过度消耗资源
 
 ## 输出格式
 
 搜索完成后，请按以下格式返回：
 
 执行结果：[成功/失败]
+
+搜索统计：
+- 搜索次数：[实际执行的搜索次数] / 15
 
 搜索结果摘要：
 - 搜索关键词：[关键词列表]
@@ -75,6 +86,8 @@ EXPLORER_SYSTEM_PROMPT = """你是一个专注于信息搜索和发现的探索�
 
 执行摘要：
 [描述搜索过程和主要发现]
+
+注意：是否需要补充搜索由分析型 Agent 决定，你只需完成当前搜索任务。
 """
 
 
@@ -113,6 +126,9 @@ class ExplorerAgent(BaseExpertAgent):
         - 来源信息
     """
     
+    # 探索型 Agent 特定的限制
+    MAX_SEARCH_CALLS = 15  # 每轮最多搜索次数
+    
     def __init__(self, tools: list = None, max_results_per_query: int = 5):
         """
         初始化探索型 Agent
@@ -121,7 +137,12 @@ class ExplorerAgent(BaseExpertAgent):
             tools: 可用工具列表（应包含搜索工具）
             max_results_per_query: 每个查询的最大结果数
         """
-        super().__init__(AgentType.EXPLORER, tools=tools)
+        # 调用父类初始化，设置工具调用限制为 15 次
+        super().__init__(
+            AgentType.EXPLORER, 
+            tools=tools,
+            max_tool_calls=self.MAX_SEARCH_CALLS,
+        )
         self.max_results_per_query = max_results_per_query
     
     @property
@@ -232,11 +253,12 @@ class ExplorerAgent(BaseExpertAgent):
             for learning in context.existing_learnings[:5]:
                 parts.append(f"  - {learning.content[:100]}...")
         
-        # 搜索目标
-        parts.append(f"\n搜索目标：")
+        # 搜索目标和限制提醒
+        parts.append(f"\n搜索目标和限制：")
         parts.append(f"1. 找到 {self.max_results_per_query} 个高质量的信息来源")
         parts.append(f"2. 获取与研究主题相关的核心内容")
         parts.append(f"3. 记录信息来源的 URL 和标题")
+        parts.append(f"4. ⚠️ 最多执行 {self.MAX_SEARCH_CALLS} 次搜索操作，达到限制后必须总结")
         
         return "\n".join(parts)
     
