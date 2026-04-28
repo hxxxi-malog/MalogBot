@@ -1073,9 +1073,20 @@ class ResearchService:
             
             self._tracks[task.id] = tracks
             
-            # 3. 并行执行所有研究方向
+            # 3. 并行执行所有研究方向（使用 asyncio.to_thread 实现真正的并行）
+            # 因为 Agent.execute 是同步方法，需要在线程池中执行
+            logger.info(f"[ResearchService] Starting parallel execution of {len(tracks)} directions")
+            
+            async def run_direction_in_thread(track: ResearchTrack) -> AgentResult:
+                """在线程池中执行单个研究方向"""
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    None,  # 使用默认线程池
+                    lambda: self._execute_direction_sync(task, track)
+                )
+            
             results = await asyncio.gather(*[
-                self._execute_direction(task, track)
+                run_direction_in_thread(track)
                 for track in tracks
             ], return_exceptions=True)
             
@@ -1116,13 +1127,13 @@ class ResearchService:
             task.error_message = str(e)
             task.update_timestamp()
     
-    async def _execute_direction(
+    def _execute_direction_sync(
         self,
         task: ResearchTaskModel,
         track: ResearchTrack,
     ) -> AgentResult:
         """
-        执行单个研究方向
+        执行单个研究方向（同步版本，用于线程池执行）
         
         Args:
             task: 研究任务
@@ -1132,10 +1143,10 @@ class ResearchService:
             执行结果
         """
         try:
-            logger.info(f"Executing direction {track.direction_id} for task {task.id}")
+            logger.info(f"[ResearchService] Executing direction {track.direction_id} for task {task.id}")
             
-            # 推送进度
-            await self._push_track_progress(track, "exploring", "正在搜索相关信息", 0)
+            # 推送进度（使用同步方式）
+            self._push_track_progress_sync(track, "exploring", "正在搜索相关信息", 0)
             
             # Phase 1: 探索（搜索）
             explorer = self._get_explorer_agent()
@@ -1165,7 +1176,7 @@ class ResearchService:
             track.advance_step()
             
             # 推送进度
-            await self._push_track_progress(track, "analyzing", "正在分析搜索结果", 33)
+            self._push_track_progress_sync(track, "analyzing", "正在分析搜索结果", 33)
             
             # Phase 2: 分析
             analyzer = self._get_analyzer_agent()
@@ -1192,7 +1203,7 @@ class ResearchService:
             track.advance_step()
             
             # 推送进度
-            await self._push_track_progress(track, "synthesizing", "正在总结研究发现", 66)
+            self._push_track_progress_sync(track, "synthesizing", "正在总结研究发现", 66)
             
             # Phase 3: 总结
             synthesizer = self._get_synthesizer_agent()
@@ -1211,7 +1222,7 @@ class ResearchService:
             if synthesis_result.success:
                 track.context["summary"] = synthesis_result.data.get("markdown", "")
                 track.advance_step()
-                await self._push_track_progress(track, "completed", "研究方向完成", 100)
+                self._push_track_progress_sync(track, "completed", "研究方向完成", 100)
             else:
                 track.fail_current_step(synthesis_result.error)
             
@@ -1220,7 +1231,62 @@ class ResearchService:
         except Exception as e:
             logger.error(f"Direction execution failed: {e}", exc_info=True)
             track.fail_current_step(str(e))
-            raise
+            return AgentResult(success=False, error=str(e))
+    
+    def _push_track_progress_sync(
+        self,
+        track: ResearchTrack,
+        phase: str,
+        message: str,
+        progress_pct: int,
+    ):
+        """
+        推送 Track 进度（同步版本）
+        
+        使用 asyncio.run_coroutine_threadsafe 在后台事件循环中执行异步推送
+        """
+        try:
+            # 在后台事件循环中执行异步推送
+            future = asyncio.run_coroutine_threadsafe(
+                sse_gateway.push(
+                    event_type="progress",
+                    task_id=track.task_id,
+                    track_id=track.track_id,
+                    data={
+                        "phase": phase,
+                        "summary": message,
+                        "progress_pct": progress_pct,
+                        "direction_id": track.direction_id,
+                        "direction_name": track.topic,
+                    },
+                ),
+                background_executor._loop
+            )
+            # 不等待结果，立即返回
+            logger.debug(f"[ResearchService] Progress pushed for direction {track.direction_id}: {phase}")
+        except Exception as e:
+            logger.warning(f"[ResearchService] Failed to push progress: {e}")
+    
+    async def _execute_direction(
+        self,
+        task: ResearchTaskModel,
+        track: ResearchTrack,
+    ) -> AgentResult:
+        """
+        执行单个研究方向（异步包装器，保留向后兼容）
+        
+        Args:
+            task: 研究任务
+            track: 研究轨道
+            
+        Returns:
+            执行结果
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._execute_direction_sync(task, track)
+        )
     
     # ============ Agent 管理 ============
     
