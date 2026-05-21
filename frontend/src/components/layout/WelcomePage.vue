@@ -15,6 +15,8 @@ import {
 } from '@/stores'
 import { sessionApi, webSearchApi } from '@/api'
 import { formatTime, generateId } from '@/utils'
+import { restoreCompletedResearch } from '@/utils/researchRestore'
+import type { ResearchTaskRestoreData } from '@/utils/researchRestore'
 import type { Session } from '@/types'
 
 const emit = defineEmits<{
@@ -96,14 +98,29 @@ async function handleSelectSession(sessionId: string) {
     clearMessages()
     const data = await sessionApi.info(sessionId)
     if (data.messages) {
-      data.messages.forEach((msg) => {
+      // 只加载 user 和 assistant 消息
+      const displayMessages = (data.messages as Array<{ role: string; content: string; timestamp?: string }>).filter(
+        (msg) => msg.role === 'user' || msg.role === 'assistant'
+      )
+      displayMessages.forEach((msg) => {
         addMessage({
           id: generateId(),
-          role: msg.role,
+          role: msg.role as 'user' | 'assistant',
           content: msg.content,
           timestamp: msg.timestamp || new Date().toISOString(),
         })
       })
+
+      // 恢复完成的研究报告
+      if (data.research_tasks && Array.isArray(data.research_tasks)) {
+        let restoredCount = 0
+        for (const researchTask of data.research_tasks) {
+          if (restoreCompletedResearch(store.chat.messages, researchTask as ResearchTaskRestoreData)) {
+            restoredCount++
+          }
+        }
+        console.log('[WelcomePage] Restored', restoredCount, 'research reports')
+      }
     }
     store.session.isWelcomeMode = false
   } catch (error) {

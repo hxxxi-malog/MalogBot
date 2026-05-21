@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { Globe, BookOpen, Send, Square, Bot } from 'lucide-vue-next'
 import MessageList from '@/components/chat/MessageList.vue'
 import {
@@ -39,7 +39,6 @@ import type { DirectionSpec } from '@/types'
 
 const { startResearch: researchStart, confirmPlan, clarify, clarifySkip, cancelResearch, sendIntervention, modifyPlan } = useResearch()
 const inputText = ref('')
-const messageListRef = ref<HTMLElement | null>(null)
 
 // 团队模式轮询
 let teamPollingTimer: ReturnType<typeof setInterval> | null = null
@@ -854,28 +853,8 @@ onUnmounted(() => {
   stopTeamPolling()
 })
 
-// 智能滚动：仅在用户处于底部附近时自动滚动，避免用户上滑查看历史时被拉回底部
-function isUserNearBottom(): boolean {
-  const el = messageListRef.value
-  if (!el) return true
-  // 距离底部 100px 以内视为"在底部"
-  return el.scrollHeight - el.scrollTop - el.clientHeight < 100
-}
-
-function scrollToBottom() {
-  const el = messageListRef.value
-  if (el) {
-    el.scrollTop = el.scrollHeight
-  }
-}
-
-watch(messages, () => {
-  nextTick(() => {
-    if (isUserNearBottom()) {
-      scrollToBottom()
-    }
-  })
-}, { deep: true })
+// 智能滚动已移至 MessageList.vue 组件内部（它拥有实际滚动容器）
+// ChatView 中的 messageListRef 指向组件实例而非 DOM 元素，此处无法正确控制滚动
 </script>
 
 <template>

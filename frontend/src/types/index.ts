@@ -349,8 +349,23 @@ export interface SessionsResponse extends ApiResponse {
   current_session_id: string | null
 }
 
+export interface ResearchTaskHistory {
+  task_id: string
+  query: string
+  mode: string
+  status: string
+  created_at: string | null
+  completed_at: string | null
+  duration_seconds: number | null
+  plan: { directions: DirectionSpec[]; is_confirmed: boolean } | null
+  report_content: string | null
+  report_word_count: number | null
+  report_source_count: number | null
+}
+
 export interface SessionInfoResponse extends ApiResponse {
   messages: Message[]
+  research_tasks?: ResearchTaskHistory[]
 }
 
 export interface KnowledgeBasesResponse extends ApiResponse {

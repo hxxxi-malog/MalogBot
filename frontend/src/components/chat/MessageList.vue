@@ -50,10 +50,16 @@ const showTypingIndicator = computed(() => {
   return false
 })
 
-// 自动滚动到底部
+// 智能滚动：仅在用户处于底部附近时自动滚动，用户上滑查看历史时不被拉回
+function isUserNearBottom(): boolean {
+  const el = listRef.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 100
+}
+
 watch(() => props.messages, () => {
   nextTick(() => {
-    if (listRef.value) {
+    if (listRef.value && isUserNearBottom()) {
       listRef.value.scrollTop = listRef.value.scrollHeight
     }
   })

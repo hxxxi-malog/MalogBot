@@ -30,6 +30,8 @@ import { sessionApi, knowledgeApi, webSearchApi, chatApi, teamApi } from './api'
 import { useResearch } from './composables/useResearch'
 import { parseSSEStream } from './composables/useStream'
 import { generateId } from './utils'
+import { restoreCompletedResearch } from './utils/researchRestore'
+import type { ResearchTaskRestoreData } from './utils/researchRestore'
 
 const { startResearch: researchStart } = useResearch()
 
@@ -95,6 +97,17 @@ async function loadSessionHistory(sessionId: string) {
         })
       })
       console.log('[App] Loaded', displayMessages.length, 'messages')
+    }
+
+    // 恢复研究状态：将完成的研究报告注入到对应消息的 attachments 中
+    if (infoData.research_tasks && Array.isArray(infoData.research_tasks)) {
+      let restoredCount = 0
+      for (const researchTask of infoData.research_tasks) {
+        if (restoreCompletedResearch(store.chat.messages, researchTask as ResearchTaskRestoreData)) {
+          restoredCount++
+        }
+      }
+      console.log('[App] Restored', restoredCount, 'research reports')
     }
   } catch (error) {
     console.error('[App] Load session history error:', error)

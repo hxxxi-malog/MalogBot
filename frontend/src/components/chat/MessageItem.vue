@@ -197,17 +197,7 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
 
     <!-- 消息内容区域 -->
     <div class="message-content-wrapper">
-      <!-- 主消息气泡 -->
-      <div
-        v-if="message.content || isUser"
-        ref="contentRef"
-        :class="['message-bubble', isUser ? 'bubble-user' : 'bubble-assistant']"
-      >
-        <div v-if="isUser" class="user-text">{{ message.content }}</div>
-        <div v-else class="markdown-content" v-html="renderedContent" />
-      </div>
-
-      <!-- 团队进度卡片 -->
+      <!-- 团队进度卡片（不涉及报告内容，放在最前面） -->
       <TeamProgressCard
         v-if="hasTeamStatus"
         :status="teamStatus"
@@ -216,15 +206,15 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
         class="attachment-card"
       />
 
-<!-- 研究计划确认卡片（计划应在进度之上，符合 spec FR-1 约定） -->
-<PlanConfirmCard
-  v-if="hasResearchPlan && researchPlan"
-  :plan="researchPlan"
-  class="attachment-card"
-  @confirm="handleResearchConfirmPlan"
-  @modify="handleResearchModifyPlan"
-  @cancel="handleResearchCancel"
-/>
+      <!-- 研究计划确认卡片（计划在最上面，符合 spec FR-1 约定） -->
+      <PlanConfirmCard
+        v-if="hasResearchPlan && researchPlan"
+        :plan="researchPlan"
+        class="attachment-card"
+        @confirm="handleResearchConfirmPlan"
+        @modify="handleResearchModifyPlan"
+        @cancel="handleResearchCancel"
+      />
 
       <!-- 研究进度卡片 -->
       <ResearchProgressCard
@@ -244,7 +234,17 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
         @skip="handleResearchClarifySkip"
       />
 
-      <!-- 研究完成卡片 -->
+      <!-- 主消息气泡（报告内容在计划/进度之下） -->
+      <div
+        v-if="message.content || isUser"
+        ref="contentRef"
+        :class="['message-bubble', isUser ? 'bubble-user' : 'bubble-assistant']"
+      >
+        <div v-if="isUser" class="user-text">{{ message.content }}</div>
+        <div v-else class="markdown-content" v-html="renderedContent" />
+      </div>
+
+      <!-- 研究完成卡片（在报告内容之后） -->
       <ResearchCompletedCard
         v-if="hasResearchCompleted && researchCompleted"
         :data="researchCompleted"
