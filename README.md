@@ -10,18 +10,25 @@
   <img src="https://img.shields.io/badge/LangChain-0.3+-orange" alt="LangChain">
   <img src="https://img.shields.io/badge/LangGraph-0.2+-red" alt="LangGraph">
   <img src="https://img.shields.io/badge/PostgreSQL-15+-blue" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/Redis-7.0+-red" alt="Redis">
+  <img src="https://img.shields.io/badge/Vue_3-3.5+-brightgreen" alt="Vue 3">
+  <img src="https://img.shields.io/badge/TypeScript-6.0+-blue" alt="TypeScript">
+  <img src="https://img.shields.io/badge/Tailwind_CSS-4.0+-06B6D4" alt="Tailwind CSS">
+  <img src="https://img.shields.io/badge/Vite-8.0+-646CFF" alt="Vite">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
 </p>
 
-基于 RAG（检索增强生成）和智能 Agent 的知识管理助手，集成了向量检索、混合检索、长期记忆、联网搜索、多Agent团队协作、Agent自我进化知识库、监控系统等功能，提供全方位的知识管理和智能问答服务。
+基于 RAG（检索增强生成）和智能 Agent 的知识管理助手，集成了向量检索、混合检索、长期记忆、联网搜索、多Agent团队协作、Agent自我进化知识库、深度研究、MCP协议适配、监控系统等功能，提供全方位的知识管理和智能问答服务。
 
 ## 项目简介
 
-MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库问答，结合大语言模型的能力，实现智能对话、工具调用、任务管理、多Agent协作等功能。系统采用三层上下文架构，支持长期记忆和自动压缩，确保长对话场景下的稳定运行。
+MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库问答，结合大语言模型的能力，实现智能对话、工具调用、任务管理、多Agent协作、深度研究等功能。系统采用三层上下文架构，支持长期记忆和自动压缩，确保长对话场景下的稳定运行。前端基于 Vue 3 + TypeScript 构建现代化交互界面。
 
 核心亮点：
 - **Agent 自我进化知识库**：Agent 可以在对话中自主学习和记忆，记录用户信息、偏好、踩坑经验，并自动提炼为行为规则
+- **深度研究模式**：专家型Agent协作的深度研究系统，支持标准/深度两种模式，ToT规划+并行研究+反思验证+流式报告
 - **Token 预算动态加载**：Bootstrap 服务基于 Token 预算动态加载知识块，确保上下文在模型窗口内高效利用
+- **MCP 协议适配**：支持 Model Context Protocol，灵活集成外部工具和服务
 - **两级缓存架构**：L1 本地缓存 + L2 Redis 缓存，大幅提升检索性能
 - **Prometheus + Grafana 监控**：完整的可观测性方案，实时监控系统运行状态
 
@@ -93,6 +100,16 @@ MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库
   - 知识库状态指标（条目数量、向量覆盖）
   - 缓存命中率
 
+### 前端界面
+- Vue 3 + TypeScript 现代化前端
+- Tailwind CSS 样式系统
+- 流式对话界面（SSE 实时渲染）
+- 团队协作进度可视化
+- 深度研究时间线展示
+- 知识库管理弹窗
+- MCP 服务器管理弹窗
+- 命令确认交互卡片
+
 ### 工具系统
 - Bash 工具：执行命令，支持安全检测
 - Memory 工具：主动存储重要信息
@@ -100,6 +117,25 @@ MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库
 - Task 工具：任务创建和管理
 - Skills 工具：自定义技能扩展
 - Sub Agent：子代理协作
+
+### 深度研究
+- 两种研究模式：标准研究（直接执行）和深度研究（澄清+计划确认后执行）
+- 三类专家型 Agent：探索型（搜索去重）、分析型（信息提炼+反思验证）、总结型（阶段总结+全篇报告）
+- 状态机驱动流程：PENDING → ANALYZING → PENDING_CLARIFICATION → PLANNING → PENDING_CONFIRMATION → CONFIRMED → EXECUTING → COMPLETED
+- 多方向并行研究：研究方向间完全并行，方向内探索→分析→总结串行
+- Human-in-the-loop：深度模式下先追问澄清、生成研究计划确认后执行
+- 分层去重机制：Track 本地去重 + Session 全局去重(Redis) + 向量相似度去重(>0.88)
+- 网页内容清洗：trafilatura/BeautifulSoup 双方案，去除 HTML/脚本/广告噪音
+- 分析型 Agent 反思循环：检查信息冲突、验证准确性、判断是否补充检索（最多 3 轮）
+- 流式报告生成：LLM 流式生成 Markdown 报告，实时推送给前端
+- PDF 导出：weasyprint 后台异步生成，不阻塞报告查看
+- SSE 实时进度推送：状态变更、方向进度、澄清问题、计划确认等事件
+
+### MCP 协议适配
+- Model Context Protocol 标准
+- Streamable HTTP 传输层
+- MCP Server 注册与管理
+- 外部工具动态集成
 
 ### 联网搜索
 - 百度云 MCP Web Search 集成
@@ -127,6 +163,8 @@ MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库
 | 联网搜索 | 百度云 MCP |
 | 流式响应 | Server-Sent Events (SSE) |
 | 文档解析 | pdfplumber, python-docx |
+| 网页清洗 | trafilatura, BeautifulSoup |
+| PDF 生成 | weasyprint |
 | 监控 | Prometheus, Grafana |
 | 评估 | RAGAS |
 
@@ -134,9 +172,12 @@ MalogBot 是一个企业级智能助手平台，通过 RAG 技术实现知识库
 
 | 类别 | 技术 |
 |------|------|
-| 模板引擎 | Jinja2 |
-| 样式 | 原生 CSS |
-| 交互 | 原生 JavaScript |
+| 框架 | Vue 3 |
+| 语言 | TypeScript |
+| 构建工具 | Vite |
+| 样式 | Tailwind CSS |
+| 状态管理 | Vue Store (Pinia) |
+| 图标库 | Lucide Vue Next |
 
 ## 项目结构
 
@@ -145,130 +186,80 @@ malogbot/
 ├── app.py                    # Flask 应用主入口
 ├── config.py                 # 配置管理模块
 ├── requirements.txt          # 项目依赖
-├── start_db.sh              # 数据库管理脚本
-│
 ├── docker-compose.yml        # Docker Compose 编排文件
 ├── Dockerfile                # Docker 镜像构建文件
-├── .dockerignore             # Docker 构建忽略文件
-├── .env.example              # 环境变量示例文件
 ├── deploy.sh                 # 一键部署脚本
+├── start_db.sh               # 数据库管理脚本
+│
+├── api/                      # API 路由层
 │
 ├── agent/                    # Agent 模块
-│   ├── llm.py               # LLM 客户端封装
-│   ├── prompts.py           # 提示词模板
-│   ├── planning.py          # 规划模块
-│   ├── team/                # 多Agent团队协作系统
-│   │   ├── __init__.py      # 模块导出
-│   │   ├── types.py         # 类型定义
-│   │   ├── router.py        # 意图路由器
-│   │   ├── leader.py        # Leader Agent
-│   │   ├── task_board.py    # 任务看板
-│   │   ├── follower.py      # Follower Agent
-│   │   └── orchestrator.py  # 团队编排器
-│   ├── team_v2/             # 团队系统v2（Swarm模式）
-│   │   ├── orchestrator.py  # StateGraph编排器
-│   │   ├── decomposer.py    # 任务分解器
-│   │   ├── integrator.py    # 结果整合器
-│   │   ├── follower.py      # Follower Agent
-│   │   └── types.py         # 类型定义
-│   └── tools/               # 工具模块
-│       ├── bash.py          # Bash 命令执行
-│       ├── memory.py        # 长期记忆存储
-│       ├── knowledge_tools.py # 知识库工具
-│       ├── skills.py        # 技能加载
-│       ├── sub_agent.py     # 子代理
-│       ├── task_manager.py  # 任务管理
-│       ├── todo_manager.py  # TODO 管理
-│       └── context_compact.py # 上下文压缩
+│   ├── planning/             # 规划模块
+│   ├── prompts/              # 提示词模板
+│   ├── team/                 # 多Agent团队协作（Leader-Follower模式）
+│   ├── team_v2/              # 团队系统v2（Swarm模式）
+│   └── tools/                # 工具模块
+│       ├── subagent/         # 子代理工具
+│       └── task/             # 任务工具
 │
 ├── services/                 # 服务层
-│   ├── core/                # 核心模块
-│   │   ├── interfaces.py    # 抽象接口定义
-│   │   └── types.py         # 核心类型定义
-│   ├── agent/               # Agent 服务
-│   ├── bootstrap/           # Bootstrap 动态加载
-│   │   ├── bootstrap_service.py  # 加载服务
-│   │   ├── cache.py         # 两级缓存
-│   │   ├── token_counter.py # Token 计数
-│   │   ├── prompt_assembler.py # Prompt 组装
-│   │   └── models.py        # 数据模型
-│   ├── context/             # 上下文管理
-│   │   ├── session_store.py       # 会话存储
-│   │   ├── conversation_journal.py # 对话日志
-│   │   ├── context_compactor.py   # 上下文压缩
-│   │   └── long_term_memory.py    # 长期记忆
-│   ├── rag/                 # RAG 检索服务
-│   │   ├── rag_service.py         # 检索服务
-│   │   ├── enhanced_rag_service.py # 增强版检索服务
-│   │   ├── embedding_service.py   # 向量化服务
-│   │   ├── bm25_service.py        # BM25 检索
-│   │   ├── mmr_reranker.py        # MMR 重排序
-│   │   └── query_optimizer.py     # 查询优化器
-│   ├── knowledge_base/      # 知识库服务
-│   ├── monitoring/          # 监控服务
-│   │   ├── metrics_collector.py   # 指标收集器
-│   │   └── __init__.py            # 模块导出
-│   ├── agent_knowledge_repository.py # Agent 知识库 Repository
-│   ├── memory_search_engine.py     # 记忆搜索引擎
-│   ├── redis_service.py           # Redis 服务
-│   └── db_manager.py              # 数据库管理
+│   ├── agent/                # Agent 服务
+│   ├── bootstrap/            # Bootstrap 动态加载
+│   ├── chat/                 # 聊天服务
+│   ├── context/              # 上下文管理（会话、日志、压缩、长期记忆）
+│   ├── core/                 # 核心抽象接口与类型定义
+│   ├── deep_research/        # 深度研究服务
+│   │   ├── agents/           # 专家型Agent（探索型、分析型、总结型）
+│   │   └── utils/            # 研究工具（内容清洗、分层去重）
+│   ├── infrastructure/       # 基础设施（数据库、缓存、分词器）
+│   ├── knowledge/            # 知识分块、评估、仓储
+│   ├── knowledge_base/       # 知识库管理服务
+│   ├── memory/               # 记忆服务（演化、搜索、智能记忆）
+│   ├── monitoring/           # 监控指标收集
+│   └── rag/                  # RAG 检索服务（向量、BM25、MMR、查询优化）
 │
 ├── models/                   # 数据模型
-│   ├── database.py          # 基础模型
-│   ├── knowledge_base.py    # 知识库模型
-│   └── agent_knowledge.py   # Agent 知识库模型
+│
+├── frontend/                 # 前端应用
+│   └── src/
+│       ├── api/              # API 请求封装
+│       ├── components/
+│       │   ├── chat/         # 聊天组件（消息、确认、团队进度、研究等）
+│       │   ├── layout/       # 布局组件（侧边栏、聊天视图、欢迎页）
+│       │   ├── modal/        # 弹窗组件（知识库管理、MCP管理）
+│       │   └── ui/           # 基础UI组件
+│       ├── composables/      # 组合式函数（流式响应等）
+│       ├── stores/           # 状态管理
+│       ├── styles/           # 全局样式
+│       ├── types/            # TypeScript 类型定义
+│       └── utils/            # 工具函数
+│
+├── mcp/                      # MCP 协议适配
+│   └── transport/            # 传输层（Streamable HTTP等）
 │
 ├── monitoring/               # 监控系统
-│   ├── docker-compose.yml   # Prometheus + Grafana
-│   ├── prometheus.yml       # Prometheus 配置
-│   ├── grafana/             # Grafana 配置
-│   │   └── provisioning/
-│   │       ├── dashboards/  # 仪表盘配置
-│   │       └── datasources/ # 数据源配置
-│   ├── start.sh             # 启动监控
-│   └── stop.sh              # 停止监控
+│   └── grafana/provisioning/ # Grafana 配置（仪表盘、数据源）
 │
-├── evaluation/               # 评估系统
-│   ├── retrieval_evaluation_service.py # 检索评估服务
-│   ├── large_scale_evaluation.py       # 大规模评估
-│   ├── evaluate_retrieval.py           # 评估脚本
+├── evaluation/               # 检索评估系统
 │   └── tests/                # 评估测试
 │
 ├── scripts/                  # 脚本工具
-│   ├── migrations/          # 数据库迁移
-│   │   ├── init_agent_knowledge_tables.py # 初始化知识库表
-│   │   └── ...
-│   ├── tools/               # 工具脚本
-│   │   ├── rebuild_index.py       # 重建索引
-│   │   └── ...
-│   ├── diagnose_bootstrap.py # Bootstrap 诊断
-│   └── migrate_memories.py   # 记忆迁移
+│   ├── migrations/           # 数据库迁移
+│   └── tools/                # 工具脚本
 │
 ├── tests/                    # 测试目录
-│   ├── test_bootstrap.py    # Bootstrap 测试
-│   ├── test_agent_knowledge.py # Agent 知识库测试
-│   ├── test_team_v2.py      # 团队v2测试
-│   └── ...
-│
-├── mcp/                      # MCP 协议适配
-│   └── adapters.py          # 百度云 Web Search
 │
 ├── skills/                   # 技能模块
-│   ├── postgres-performance-diagnosis/
-│   └── ui-ux-pro-max-skill/
 │
-├── docs/                     # 文档
-│   ├── agent-self-evolution-knowledge-base-design.md # 知识库设计
-│   ├── AgentTeam.md         # 团队协作文档
-│   ├── database.md          # 数据库设计
-│   └── memory-unification-plan.md # 记忆统一方案
-│
+├── guide/                    # 教程文档
+├── docs/                     # 设计文档
+├── dicts/                    # 拼音词库
 ├── assert/                   # 图片资源
 ├── templates/                # HTML 模板
 ├── uploads/                  # 文件上传目录
 └── archives/                 # 归档目录
-    ├── journals/            # 对话日志归档
-    └── transcripts/         # 转录归档
+    ├── journals/             # 对话日志归档
+    └── transcripts/          # 转录归档
 ```
 
 ## 快速开始
@@ -443,7 +434,52 @@ Agent 可用工具：
 - todo_manager：TODO 管理
 - context_compact：手动触发上下文压缩
 
-### 9. 安全机制
+### 9. 深度研究
+
+系统支持深度研究模式，通过专家型 Agent 协作完成复杂研究任务。
+
+**两种研究模式**：
+- **标准研究**：直接生成研究计划并执行，适合快速了解
+- **深度研究**：先 LLM 分析问题 → 追问澄清（最多3个问题）→ 用 ToT 生成研究计划 → 用户确认后执行
+
+**专家型 Agent 架构**：
+
+| Agent 类型 | 职责 | 关键能力 |
+|-----------|------|----------|
+| 探索型 Agent | 搜索、发现信息 | 关键词优化、多源搜索、去重过滤、内容清洗 |
+| 分析型 Agent | 分析搜索结果 | 信息提取、观点归纳、质量评估、反思验证（最多3轮） |
+| 总结型 Agent | 生成研究报告 | 阶段总结、全篇报告、流式生成、来源整理 |
+
+**研究执行流程**：
+```
+用户问题
+    ↓
+拆分为多个研究方向
+    ↓
+┌──────────────────┼──────────────────┐
+↓                  ↓                  ↓
+研究方向A         研究方向B         研究方向C   ← 方向间并行
+↓                  ↓                  ↓
+探索型 Agent      探索型 Agent      探索型 Agent
+↓                  ↓                  ↓
+分析型 Agent      分析型 Agent      分析型 Agent ← 方向内串行
+↓                  ↓                  ↓
+总结型 Agent      总结型 Agent      总结型 Agent
+└──────────────────┼──────────────────┘
+                   ↓
+         总结型 Agent（全篇报告流式生成）
+                   ↓
+         后台异步生成 PDF
+```
+
+**核心机制**：
+- 状态机驱动：严格的状态转换 DAG，幂等性保障
+- ResearchTrack：每个方向独立的运行时执行单元，含去重缓存和执行步骤
+- SSE 网关：多 Track 消息路由，单连接多路复用
+- 用户干预：研究执行中可发送补充信息引导研究方向
+- 报告结构：标题 → 摘要 → 各方向结论 → 汇总分析 → 用户问题回答 → 参考来源
+
+### 10. 安全机制
 
 - 命令分类：读取类直接执行，执行类需确认
 - 危险命令检测：sudo、rm、chmod 等
@@ -486,6 +522,22 @@ POST /cancel            # 取消命令执行
 ```
 GET  /team/status       # 获取团队执行状态
 GET  /team/board        # 获取任务看板视图
+```
+
+### 深度研究
+
+```
+POST /api/research/start                      # 发起研究（standard/deep模式）
+POST /api/research/<task_id>/resume            # 回答澄清问题后恢复研究
+POST /api/research/<task_id>/cancel            # 取消研究
+GET  /api/research/<task_id>/status            # 获取研究状态
+GET  /api/research/<task_id>/plan              # 获取研究计划
+PUT  /api/research/<task_id>/plan              # 修改研究计划
+POST /api/research/<task_id>/confirm           # 确认研究计划并开始执行
+GET  /api/research/<task_id>/report/download   # 下载 PDF 报告
+GET  /api/research/<task_id>/events            # SSE 实时研究进度推送
+GET  /api/research/history                     # 历史研究记录列表
+POST /api/research/<task_id>/intervention      # 研究中用户干预
 ```
 
 ### 任务继续
