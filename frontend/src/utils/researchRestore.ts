@@ -3,6 +3,7 @@
  *
  * 用于从后端获取的 research_tasks 数据恢复前端消息中的研究状态
  * （报告内容、计划卡片、完成卡片），解决刷新后数据丢失的问题。
+ * 支持已完成研究任务和进行中研究任务的恢复。
  */
 import type { DirectionSpec, Message } from '@/types'
 
@@ -17,6 +18,86 @@ export interface ResearchTaskRestoreData {
   report_source_count: number | null
   duration_seconds: number | null
   plan: { directions: DirectionSpec[]; is_confirmed: boolean } | null
+}
+
+/** 研究任务的终态状态集合 */
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+
+/**
+ * 判断研究任务是否处于进行中状态
+ */
+export function isInProgressResearch(status: string): boolean {
+  return !TERMINAL_STATUSES.has(status)
+}
+
+/**
+ * 恢复进行中的研究任务到前端消息中
+ *
+ * 策略：找到用户问题对应的 assistant 消息，恢复研究中间状态：
+ * - 设置 researchTaskId、researching 状态
+ * - 恢复研究计划卡片（如有）
+ * - 返回 task_id 供调用方重连 SSE
+ *
+ * @param messages - 前端消息列表
+ * @param researchTask - 后端返回的研究任务数据
+ * @returns task_id 表示需要重连 SSE，null 表示无需重连
+ */
+export function restoreInProgressResearch(
+  messages: Message[],
+  researchTask: ResearchTaskRestoreData
+): string | null {
+  if (!isInProgressResearch(researchTask.status)) {
+    return null
+  }
+
+  // 找到与该研究问题对应的用户消息
+  const userMsgIndex = messages.findIndex(
+    (m) => m.role === 'user' && m.content === researchTask.query && !((m as unknown as Record<string, unknown>)._researchRestored)
+  )
+  if (userMsgIndex === -1) {
+    console.warn('[researchRestore] Could not find user message for in-progress research:', researchTask.query.substring(0, 50))
+    return null
+  }
+
+  // 标记该 user 消息已被恢复
+  ;(messages[userMsgIndex] as unknown as Record<string, unknown>)._researchRestored = true
+
+  // 找到用户消息之后的 assistant 消息
+  const assistantMsg = messages[userMsgIndex + 1]
+  if (!assistantMsg || assistantMsg.role !== 'assistant') {
+    console.warn('[researchRestore] Could not find assistant message for in-progress research')
+    return null
+  }
+
+  // 恢复研究计划卡片（如有）
+  if (!assistantMsg.attachments) {
+    assistantMsg.attachments = {}
+  }
+
+  if (researchTask.plan && researchTask.plan.directions && researchTask.plan.directions.length > 0) {
+    assistantMsg.attachments.researchPlan = {
+      task_id: researchTask.task_id,
+      directions: researchTask.plan.directions as DirectionSpec[],
+      estimated_time: '',
+      can_modify: researchTask.status === 'pending_confirmation',
+    }
+  }
+
+  // 根据 status 设置 assistant 消息内容
+  const statusMessageMap: Record<string, string> = {
+    'pending': '研究任务已创建，正在等待处理...',
+    'analyzing': '正在深度分析您的问题...',
+    'planning': '正在生成研究计划...',
+    'pending_confirmation': '研究计划已生成，请确认后开始研究',
+    'executing': '研究正在执行中...',
+    'pending_clarification': '等待回答澄清问题...',
+    'confirmed': '研究计划已确认，正在执行研究...',
+    'resumed': '研究已恢复，正在继续执行...',
+  }
+  assistantMsg.content = statusMessageMap[researchTask.status] || '研究进行中...'
+
+  console.log('[researchRestore] Restored in-progress research for task:', researchTask.task_id, 'status:', researchTask.status)
+  return researchTask.task_id
 }
 
 /**

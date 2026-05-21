@@ -25,15 +25,16 @@ import {
   setIntegratingContent,
   researchMode,
   setResearching,
+  setResearchTaskId,
 } from './stores'
 import { sessionApi, knowledgeApi, webSearchApi, chatApi, teamApi } from './api'
 import { useResearch } from './composables/useResearch'
 import { parseSSEStream } from './composables/useStream'
 import { generateId } from './utils'
-import { restoreCompletedResearch } from './utils/researchRestore'
+import { restoreCompletedResearch, restoreInProgressResearch } from './utils/researchRestore'
 import type { ResearchTaskRestoreData } from './utils/researchRestore'
 
-const { startResearch: researchStart } = useResearch()
+const { startResearch: researchStart, connectSSE: researchConnectSSE } = useResearch()
 
 // 模态框状态
 const showMCPModal = ref(false)
@@ -99,15 +100,35 @@ async function loadSessionHistory(sessionId: string) {
       console.log('[App] Loaded', displayMessages.length, 'messages')
     }
 
-    // 恢复研究状态：将完成的研究报告注入到对应消息的 attachments 中
+    // 恢复研究状态
     if (infoData.research_tasks && Array.isArray(infoData.research_tasks)) {
       let restoredCount = 0
+      let inProgressCount = 0
       for (const researchTask of infoData.research_tasks) {
-        if (restoreCompletedResearch(store.chat.messages, researchTask as ResearchTaskRestoreData)) {
+        const taskData = researchTask as ResearchTaskRestoreData
+        // 先尝试恢复已完成的研究
+        if (restoreCompletedResearch(store.chat.messages, taskData)) {
           restoredCount++
+          continue
+        }
+        // 再尝试恢复进行中的研究，返回 task_id 表示需要 SSE 重连
+        const reconnectTaskId = restoreInProgressResearch(store.chat.messages, taskData)
+        if (reconnectTaskId) {
+          inProgressCount++
+          // 设置研究状态
+          setResearchTaskId(reconnectTaskId)
+          setResearching(true)
+          setStreaming(true)
+          console.log('[App] Restoring in-progress research, reconnecting SSE for task:', reconnectTaskId)
+          // 异步重连 SSE（利用 Redis STREAM 回放获取缺失事件）
+          researchConnectSSE(reconnectTaskId).catch((err: unknown) => {
+            console.error('[App] SSE reconnect failed for task:', reconnectTaskId, err)
+            setResearching(false)
+            setStreaming(false)
+          })
         }
       }
-      console.log('[App] Restored', restoredCount, 'research reports')
+      console.log('[App] Restored', restoredCount, 'completed research reports,', inProgressCount, 'in-progress research tasks')
     }
   } catch (error) {
     console.error('[App] Load session history error:', error)
@@ -179,6 +200,15 @@ async function handleStartChat(message: string) {
 
     setSessionId(data.session_id)
     clearMessages()
+
+    // 乐观更新：立即将新会话插入侧边栏列表头部，不等 loadSessions() 刷新
+    store.session.list.unshift({
+      session_id: data.session_id,
+      message_count: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    console.log('[App] Optimistic sidebar update: new session added to list')
 
     // 切换到聊天视图
     store.session.isWelcomeMode = false
