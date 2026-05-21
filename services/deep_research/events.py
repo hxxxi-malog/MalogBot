@@ -4,11 +4,10 @@ SSE 事件类型定义
 定义研究过程中的实时事件类型和数据结构，
 用于前端 SSE (Server-Sent Events) 推送。
 """
-import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional, AsyncIterator
+from typing import Any, Optional
 import json
 import logging
 
@@ -257,7 +256,7 @@ class ReportCompleteData:
     report_id: str
     word_count: int
     source_count: int
-    pdf_generating: bool = True  # PDF 是否正在后台生成
+    pdf_generating: bool = False  # PDF 是否正在后台生成（默认 False，PDF 已移除）
 
     def to_dict(self) -> dict:
         return {
@@ -462,170 +461,3 @@ def create_error_event(
         data=data.to_dict(),
     )
 
-
-# ============ SSE Gateway ============
-
-class SSEGateway:
-    """
-    SSE 网关
-    
-    管理 SSE 连接和消息路由，支持：
-    - 多 Session 并发连接
-    - 按 track_id 路由消息
-    - 离线消息处理
-    """
-    
-    def __init__(self, max_queue_size: int = 100):
-        """
-        初始化 SSE 网关
-        
-        Args:
-            max_queue_size: 每个连接的消息队列最大长度
-        """
-        self.connections: dict[str, asyncio.Queue] = {}  # session_id -> queue
-        self.max_queue_size = max_queue_size
-        self._track_to_session: dict[str, str] = {}  # track_id -> session_id
-    
-    def register_track(self, track_id: str, session_id: str) -> None:
-        """注册 track 到 session 的映射"""
-        self._track_to_session[track_id] = session_id
-        logger.debug(f"Registered track {track_id} -> session {session_id}")
-    
-    def unregister_track(self, track_id: str) -> None:
-        """取消 track 注册"""
-        self._track_to_session.pop(track_id, None)
-        logger.debug(f"Unregistered track {track_id}")
-    
-    def get_session_by_track(self, track_id: str) -> Optional[str]:
-        """根据 track_id 获取 session_id"""
-        return self._track_to_session.get(track_id)
-    
-    async def subscribe(self, session_id: str) -> AsyncIterator[str]:
-        """
-        前端建立 SSE 连接
-        
-        Args:
-            session_id: 会话 ID
-            
-        Yields:
-            SSE 格式的消息字符串
-        """
-        queue = asyncio.Queue(maxsize=self.max_queue_size)
-        self.connections[session_id] = queue
-        
-        logger.info(f"SSE connection established for session {session_id}")
-        
-        try:
-            while True:
-                # 等待消息
-                message = await queue.get()
-                
-                # 检查是否是关闭信号
-                if message is None:
-                    break
-                
-                # 格式化输出
-                yield message
-                
-        except asyncio.CancelledError:
-            logger.info(f"SSE connection cancelled for session {session_id}")
-        finally:
-            self.connections.pop(session_id, None)
-            logger.info(f"SSE connection closed for session {session_id}")
-    
-    async def push(
-        self,
-        event: SSEEventType,
-        task_id: str,
-        track_id: str,
-        data: dict[str, Any],
-    ) -> bool:
-        """
-        推送消息到对应的 Session
-        
-        Args:
-            event: 事件类型
-            task_id: 任务 ID
-            track_id: 轨道 ID
-            data: 事件数据
-            
-        Returns:
-            是否成功推送
-        """
-        # 查找对应的 session
-        session_id = self.get_session_by_track(track_id)
-        if not session_id:
-            logger.warning(f"No session found for track {track_id}")
-            return False
-        
-        # 检查连接是否存在
-        if session_id not in self.connections:
-            logger.warning(f"No SSE connection for session {session_id}, message will be lost")
-            return False
-        
-        # 创建 SSE 事件
-        sse_event = SSEEvent(
-            event=event,
-            task_id=task_id,
-            track_id=track_id,
-            data=data,
-        )
-        
-        # 格式化为 SSE 字符串
-        message = sse_event.to_sse_format()
-        
-        # 获取队列
-        queue = self.connections[session_id]
-        
-        # 检查队列是否已满
-        if queue.full():
-            # 丢弃最旧的消息
-            try:
-                queue.get_nowait()
-                logger.warning(f"Queue full for session {session_id}, dropped oldest message")
-            except asyncio.QueueEmpty:
-                pass
-        
-        # 放入新消息
-        try:
-            queue.put_nowait(message)
-            logger.debug(f"Pushed event {event.value} to session {session_id}")
-            return True
-        except asyncio.QueueFull:
-            logger.error(f"Failed to push event to session {session_id}, queue full")
-            return False
-    
-    async def push_event(self, event: SSEEvent) -> bool:
-        """
-        推送 SSEEvent 对象
-        
-        Args:
-            event: SSE 事件对象
-            
-        Returns:
-            是否成功推送
-        """
-        return await self.push(
-            event=event.event,
-            task_id=event.task_id,
-            track_id=event.track_id,
-            data=event.data,
-        )
-    
-    async def close(self, session_id: str) -> None:
-        """关闭指定 Session 的连接"""
-        if session_id in self.connections:
-            queue = self.connections[session_id]
-            # 发送关闭信号
-            try:
-                queue.put_nowait(None)
-            except:
-                pass
-    
-    def has_connection(self, session_id: str) -> bool:
-        """检查是否有活跃连接"""
-        return session_id in self.connections
-    
-    def get_active_sessions(self) -> list[str]:
-        """获取所有活跃的 Session"""
-        return list(self.connections.keys())

@@ -165,11 +165,12 @@ class EventBuffer:
 
         if redis is not None:
             try:
-                # XADD 自动生成递增 ID
+                # XADD 自动生成递增 ID，approximate=True 对应 Redis 的 MAXLEN ~N 近似截断
                 seq_no = redis.xadd(
                     stream_key,
                     {"event_type": event_type, "data": json.dumps(data, ensure_ascii=False)},
-                    maxlen=f"~{_MAX_STREAM_LEN}",
+                    maxlen=_MAX_STREAM_LEN,
+                    approximate=True,
                     id="*",
                 )
                 # 仅首次写入时设置过期时间

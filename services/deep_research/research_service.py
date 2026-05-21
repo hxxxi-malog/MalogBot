@@ -1813,7 +1813,17 @@ class ResearchService:
         message: str,
         progress_pct: int,
     ):
-        """推送 Track 进度"""
+        """推送 Track 进度（含动态时间估算）"""
+        # 计算已用时间
+        elapsed_seconds = 0.0
+        task = self._tasks.get(track.task_id)
+        if task and task.started_at:
+            elapsed_seconds = (datetime.now() - task.started_at).total_seconds()
+
+        # 估算剩余时间
+        directions = self._tracks.get(track.task_id, [])
+        estimated_remaining = self._estimate_remaining_time(track.task_id, elapsed_seconds, directions)
+
         # 事件类型不加 research_ 前缀，前端会自动添加
         sse_gateway.push_to_session(
             event_type="direction_progress",
@@ -1828,7 +1838,8 @@ class ResearchService:
                     "current_action": message,
                     "learnings_count": len(track.learnings),
                     "sources_count": len(track.sources),
-                }
+                },
+                "estimated_remaining": estimated_remaining,
             },
         )
     
