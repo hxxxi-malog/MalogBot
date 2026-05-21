@@ -14,6 +14,8 @@ import asyncio
 import json
 import logging
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from flask import Blueprint, request, jsonify, Response, session
@@ -28,7 +30,6 @@ from services.deep_research.research_service import (
 from services.deep_research.models import ResearchMode, ResearchStatus
 from services.deep_research.events import SSEEventType
 from services.deep_research.report_generator import ReportGenerator
-from services.deep_research.pdf_exporter import PDFExporter
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def run_async(coro):
 def get_session_id() -> str:
     """获取或创建会话ID"""
     if 'session_id' not in session:
-        session['session_id'] = str(__import__('uuid').uuid4())
+        session['session_id'] = str(uuid.uuid4())
     return session['session_id']
 
 
@@ -113,109 +114,23 @@ class UpdatePlanRequest(BaseModel):
         return v
 
 
+@dataclass
+class _PlanUpdate:
+    """计划更新数据传输对象（替代 type() 匿名类）"""
+    task_id: str
+    directions: list
+
+
 # ============ API 接口实现 ============
-
-@research_bp.route('/prepare', methods=['POST'])
-def prepare_research():
-    """
-    准备研究任务（两阶段启动模式 - 第一阶段）
-    
-    创建研究任务但不启动异步执行。前端需要：
-    1. 获取 task_id
-    2. 建立 SSE 连接（GET /events/{task_id}）
-    3. 调用 /start/{task_id} 启动执行
-    
-    这种设计确保 SSE 连接在异步任务执行前已建立，
-    避免澄清消息在连接建立前推送导致丢失。
-
-    Request Body:
-        query: 研究问题（必填）
-        mode: 研究模式 "standard" | "deep"（默认 standard）
-
-    Returns:
-        task_id: 任务ID
-        status: 当前状态（PENDING）
-        mode: 研究模式
-    """
-    try:
-        # 验证请求
-        data = request.json or {}
-        try:
-            req = StartResearchRequest(**data)
-        except ValidationError as e:
-            return jsonify({'error': str(e)}), 400
-
-        session_id = get_session_id()
-        service = get_research_service()
-
-        # 确定研究模式
-        mode = ResearchMode.DEEP if req.mode == "deep" else ResearchMode.STANDARD
-
-        # 准备任务（不启动执行）
-        task = run_async(service.prepare_task(
-            query=req.query,
-            mode=mode,
-            session_id=session_id,
-        ))
-
-        logger.info(f"[Research API] Task prepared: {task.id}, mode={mode.value}, session={session_id}")
-
-        return jsonify({
-            'status': 'ok',
-            'task_id': task.id,
-            'task_status': task.status.value,
-            'mode': task.mode.value,
-            'message': '研究任务已创建，等待启动'
-        })
-
-    except Exception as e:
-        logger.error(f"[Research API] Failed to prepare research: {e}", exc_info=True)
-        return jsonify({'error': f'准备研究任务失败: {str(e)}'}), 500
-
-
-@research_bp.route('/start/<task_id>', methods=['POST'])
-def start_research_by_id(task_id: str):
-    """
-    启动研究任务执行（两阶段启动模式 - 第二阶段）
-    
-    在前端建立 SSE 连接后调用此接口启动异步任务执行。
-    
-    Args:
-        task_id: 任务ID（由 /prepare 接口返回）
-
-    Returns:
-        task_id: 任务ID
-        status: 当前状态
-        mode: 研究模式
-    """
-    try:
-        service = get_research_service()
-
-        # 启动任务执行
-        task = run_async(service.execute_task(task_id))
-
-        logger.info(f"[Research API] Task started: {task_id}, mode={task.mode.value}")
-
-        return jsonify({
-            'status': 'ok',
-            'task_id': task.id,
-            'task_status': task.status.value,
-            'mode': task.mode.value,
-            'message': f'研究任务已启动，当前状态: {task.status.value}'
-        })
-
-    except ResearchError as e:
-        logger.warning(f"[Research API] Start research error: {e}")
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        logger.error(f"[Research API] Failed to start research: {e}", exc_info=True)
-        return jsonify({'error': f'启动研究失败: {str(e)}'}), 500
 
 
 @research_bp.route('/start', methods=['POST'])
 def start_research():
     """
-    发起新的研究任务（单阶段启动，向后兼容）
+    发起新的研究任务（单阶段启动）
+
+    创建任务并立即提交异步执行，前端建立 SSE 连接后通过 Redis STREAM
+    回放机制确保不丢失事件，无需两阶段启动。
 
     Request Body:
         query: 研究问题（必填）
@@ -225,11 +140,6 @@ def start_research():
         task_id: 任务ID
         status: 当前状态
         mode: 研究模式
-        
-    注意：此接口存在 SSE 时序竞争问题，推荐使用：
-        1. POST /prepare
-        2. GET /events/{task_id}
-        3. POST /start/{task_id}
     """
     try:
         # 验证请求
@@ -253,6 +163,15 @@ def start_research():
         ))
 
         logger.info(f"[Research API] Started research task {task.id}, mode={mode.value}")
+
+        # 通过 SSEGateway 推送 task_created 事件（经过 EventBuffer 持久化，断线可回放）
+        sse_gateway.push_to_session(
+            event_type="task_created",
+            task_id=task.id,
+            session_id=session_id,
+            data={"task_id": task.id},
+        )
+        logger.info(f"[Research API] Pushed task_created event for task {task.id}")
 
         return jsonify({
             'status': 'ok',
@@ -483,10 +402,7 @@ def update_research_plan(task_id: str):
         ]
 
         # 更新计划
-        plan = run_async(service.update_plan(task_id, type('Plan', (), {
-            'task_id': task_id,
-            'directions': directions,
-        })()))
+        plan = run_async(service.update_plan(task_id, _PlanUpdate(task_id=task_id, directions=directions)))
 
         logger.info(f"[Research API] Updated plan for task {task_id}")
 
@@ -548,39 +464,41 @@ def research_events(task_id: str):
     Returns:
         SSE 流
     """
+    # 从请求头获取最后接收的事件 ID（Redis STREAM ID 格式，如 "1716278400000-0"）
+    last_seq_no = request.headers.get('Last-Event-Seq-No', '0-0')
     session_id = get_session_id()
 
     def generate():
         """生成 SSE 事件流"""
+        import queue as _queue
+        # connection_id 用于 unsubscribe 时防止误删新连接
+        connection_id = None
         try:
-            # 获取或创建事件队列
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
+            # subscribe 传入 task_id 和 last_seq_no，自动回放 Redis STREAM 历史事件
             try:
-                queue = loop.run_until_complete(sse_gateway.subscribe(session_id))
+                connection_id, q = sse_gateway.subscribe(session_id, task_id, last_seq_no)
             except Exception as e:
                 logger.error(f"[SSE] Failed to subscribe: {e}")
                 yield f"event: error\ndata: {json.dumps({'error': '连接失败'})}\n\n"
                 return
 
-            logger.info(f"[SSE] Connection established for session {session_id}, task {task_id}")
+            logger.info(f"[SSE] Connection established for session {session_id}, task {task_id}, conn_id: {connection_id}")
 
             # 发送初始连接成功事件
             yield f"event: connected\ndata: {json.dumps({'task_id': task_id, 'message': 'SSE 连接已建立'})}\n\n"
+            logger.info(f"[SSE] Sent connected event for task {task_id}")
 
             # 心跳计数器
             heartbeat_counter = 0
 
             while True:
                 try:
-                    # 等待消息，超时 15 秒发送心跳
+                    # 使用 SimpleQueue.get(timeout=15) 实现带超时的阻塞读取
+                    # SimpleQueue 是线程安全的，不依赖事件循环
                     try:
-                        message = loop.run_until_complete(
-                            asyncio.wait_for(queue.get(), timeout=15.0)
-                        )
-                    except asyncio.TimeoutError:
-                        # 发送心跳
+                        message = q.get(timeout=15.0)
+                    except _queue.Empty:
+                        # 超时，发送心跳
                         heartbeat_counter += 1
                         yield f": heartbeat {heartbeat_counter}\n\n"
                         continue
@@ -608,7 +526,8 @@ def research_events(task_id: str):
         except Exception as e:
             logger.error(f"[SSE] Error in SSE stream: {e}", exc_info=True)
         finally:
-            sse_gateway.unsubscribe(session_id)
+            if connection_id:
+                sse_gateway.unsubscribe(session_id, connection_id)
             logger.info(f"[SSE] Connection closed for session {session_id}")
 
     return Response(
@@ -711,7 +630,7 @@ def get_research_detail(task_id: str):
         try:
             # 获取任务
             task = db.query(DBResearchTask).filter(
-                DBResearchTask.id == __import__('uuid').UUID(task_id)
+                DBResearchTask.id == uuid.UUID(task_id)
             ).first()
 
             if not task:
@@ -719,12 +638,12 @@ def get_research_detail(task_id: str):
 
             # 获取计划
             plan = db.query(DBResearchPlan).filter(
-                DBResearchPlan.task_id == __import__('uuid').UUID(task_id)
+                DBResearchPlan.task_id == uuid.UUID(task_id)
             ).first()
 
             # 获取方向进度
             directions = db.query(DBResearchDirection).filter(
-                DBResearchDirection.task_id == __import__('uuid').UUID(task_id)
+                DBResearchDirection.task_id == uuid.UUID(task_id)
             ).all()
 
             result = {
@@ -805,7 +724,7 @@ def get_research_report(task_id: str):
         try:
             # 检查任务是否存在
             task = db.query(DBResearchTask).filter(
-                DBResearchTask.id == __import__('uuid').UUID(task_id)
+                DBResearchTask.id == uuid.UUID(task_id)
             ).first()
 
             if not task:
@@ -817,7 +736,7 @@ def get_research_report(task_id: str):
 
             # 获取报告
             report = db.query(DBResearchReport).filter(
-                DBResearchReport.task_id == __import__('uuid').UUID(task_id)
+                DBResearchReport.task_id == uuid.UUID(task_id)
             ).first()
 
             if not report:
@@ -826,12 +745,12 @@ def get_research_report(task_id: str):
 
                 # 获取计划
                 plan = db.query(DBResearchPlan).filter(
-                    DBResearchPlan.task_id == __import__('uuid').UUID(task_id)
+                    DBResearchPlan.task_id == uuid.UUID(task_id)
                 ).first()
 
                 # 获取方向
                 directions = db.query(DBResearchDirection).filter(
-                    DBResearchDirection.task_id == __import__('uuid').UUID(task_id)
+                    DBResearchDirection.task_id == uuid.UUID(task_id)
                 ).all()
 
                 # 转换为内存模型
@@ -934,103 +853,6 @@ def get_research_report(task_id: str):
         return jsonify({'error': f'获取报告失败: {str(e)}'}), 500
 
 
-@research_bp.route('/<task_id>/report/download', methods=['GET'])
-def download_research_report(task_id: str):
-    """
-    下载研究报告
-
-    Args:
-        task_id: 任务ID
-
-    Query Parameters:
-        format: 下载格式 "markdown" | "pdf"（默认 pdf）
-
-    Returns:
-        文件下载
-    """
-    try:
-        from models.research import (
-            ResearchTask as DBResearchTask,
-            ResearchReport as DBResearchReport,
-        )
-        from services.db_manager import db_manager
-        from flask import send_file
-        import io
-        import tempfile
-
-        db = db_manager.session_factory()
-        try:
-            # 检查任务
-            task = db.query(DBResearchTask).filter(
-                DBResearchTask.id == __import__('uuid').UUID(task_id)
-            ).first()
-
-            if not task:
-                return jsonify({'error': '研究任务不存在'}), 404
-
-            # 获取报告
-            report = db.query(DBResearchReport).filter(
-                DBResearchReport.task_id == __import__('uuid').UUID(task_id)
-            ).first()
-
-            if not report:
-                return jsonify({'error': '报告尚未生成'}), 404
-
-            # 获取格式参数
-            format_type = request.args.get('format', 'pdf')
-
-            # 生成文件名
-            safe_title = "".join(c for c in report.title if c.isalnum() or c in (' ', '-', '_')).strip()
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-            if format_type == 'pdf':
-                # PDF 导出
-                try:
-                    exporter = PDFExporter()
-                    pdf_bytes = exporter.export_pdf(
-                        markdown_content=report.content_markdown,
-                        title=report.title,
-                    )
-
-                    filename = f"{safe_title}_{timestamp}.pdf"
-
-                    logger.info(f"[Research API] Downloading PDF report for task {task_id}")
-
-                    return send_file(
-                        io.BytesIO(pdf_bytes),
-                        mimetype='application/pdf',
-                        as_attachment=True,
-                        download_name=filename,
-                    )
-                except RuntimeError as e:
-                    # weasyprint 未安装，返回 Markdown
-                    logger.warning(f"[Research API] PDF export failed: {e}, returning markdown")
-                    format_type = 'markdown'
-                except Exception as e:
-                    logger.error(f"[Research API] PDF export error: {e}", exc_info=True)
-                    return jsonify({'error': f'PDF 导出失败: {str(e)}'}), 500
-
-            if format_type == 'markdown':
-                # Markdown 导出
-                filename = f"{safe_title}_{timestamp}.md"
-
-                logger.info(f"[Research API] Downloading Markdown report for task {task_id}")
-
-                return send_file(
-                    io.BytesIO(report.content_markdown.encode('utf-8')),
-                    mimetype='text/markdown',
-                    as_attachment=True,
-                    download_name=filename,
-                )
-
-            return jsonify({'error': f'不支持的格式: {format_type}'}), 400
-
-        finally:
-            db.close()
-
-    except Exception as e:
-        logger.error(f"[Research API] Failed to download report: {e}", exc_info=True)
-        return jsonify({'error': f'下载报告失败: {str(e)}'}), 500
 
 
 # 导出 Blueprint

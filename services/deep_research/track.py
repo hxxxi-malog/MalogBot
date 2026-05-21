@@ -97,6 +97,10 @@ class ResearchTrack:
     status: TrackStatus = TrackStatus.RUNNING
     error_message: str = ""
 
+    # 进度信息（实时更新，供 periodic_progress_update 读取）
+    progress: int = 0  # 0-100
+    current_action: str = ""  # 当前操作描述
+
     # 消息队列（用于 SSE 推送）
     sse_queue: Optional[asyncio.Queue] = field(default=None, repr=False)
 
@@ -239,6 +243,9 @@ class ResearchTrack:
         total_steps = len(self.plan)
         completed_steps = sum(1 for s in self.plan if s.status == "completed")
         progress_pct = int((completed_steps / total_steps * 100)) if total_steps > 0 else 0
+        
+        # 同步更新 progress 属性（供外部读取）
+        self.progress = progress_pct
         
         return {
             "track_id": self.track_id,

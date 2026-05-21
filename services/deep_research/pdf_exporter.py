@@ -35,9 +35,19 @@ class PDFExporter:
         """检查 weasyprint 是否可用"""
         try:
             import weasyprint
+            logger.info(f"[PDFExporter] weasyprint available, version: {weasyprint.__version__}")
             return True
         except ImportError:
-            logger.warning("weasyprint not installed, PDF export will be disabled")
+            logger.warning("[PDFExporter] weasyprint not installed, PDF export will be disabled")
+            return False
+        except OSError as e:
+            # weasyprint 安装了但系统库缺失
+            logger.warning(f"[PDFExporter] weasyprint import failed (missing system libs): {e}")
+            logger.warning("[PDFExporter] On macOS, install: brew install cairo pango glib harfbuzz fribidi")
+            logger.warning("[PDFExporter] Then set: export DYLD_LIBRARY_PATH=/opt/homebrew/opt/glib/lib:/opt/homebrew/opt/cairo/lib:/opt/homebrew/opt/pango/lib:/opt/homebrew/opt/harfbuzz/lib:/opt/homebrew/opt/fribidi/lib:$DYLD_LIBRARY_PATH")
+            return False
+        except Exception as e:
+            logger.warning(f"[PDFExporter] weasyprint check failed: {e}")
             return False
 
     def _check_markdown(self) -> bool:

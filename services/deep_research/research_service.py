@@ -47,6 +47,7 @@ from services.deep_research.agents.synthesizer_agent import SynthesizerAgent
 from services.deep_research.utils.deduplicator import Deduplicator, RedisDeduplicator
 from services.deep_research.utils.content_cleaner import WebContentCleaner
 from services.deep_research.events import SSEEvent, SSEEventType
+from services.deep_research.event_buffer import event_buffer
 
 # 导入数据库模型
 from models.research import (
@@ -229,63 +230,123 @@ class SSEGateway:
     SSE 消息网关
     
     管理多 Track 消息路由，支持单连接多路复用。
+    使用 connection_id 防止旧连接误删新连接（同一 session 复用时）。
+    
+    关键设计：使用 queue.SimpleQueue 替代 asyncio.Queue
+    - asyncio.Queue 绑定事件循环，跨 loop 的 put 不会唤醒另一个 loop 的 get
+    - SimpleQueue 是线程安全的，不依赖事件循环，可跨线程/事件循环安全使用
     """
     
     def __init__(self):
-        self._connections: dict[str, asyncio.Queue] = {}  # session_id -> queue
+        import queue as _queue
+        self._connections: dict[str, tuple[str, _queue.SimpleQueue]] = {}  # session_id -> (connection_id, SimpleQueue)
         self._track_to_session: dict[str, str] = {}  # track_id -> session_id
-        logger.info("SSE Gateway initialized")
+        logger.info("SSE Gateway initialized (thread-safe SimpleQueue)")
     
-    async def subscribe(self, session_id: str) -> asyncio.Queue:
+    def subscribe(self, session_id: str, task_id: str = None, last_seq_no: str = "0-0"):
         """
-        前端建立 SSE 连接
+        前端建立 SSE 连接（同步方法，在 Flask 请求线程中调用）
         
         Args:
             session_id: 会话 ID
+            task_id: 任务 ID（用于回放 Redis STREAM 历史事件）
+            last_seq_no: 前端最后接收到的事件 ID（"0-0" 表示从头回放）
             
         Returns:
-            消息队列
+            (connection_id, 消息队列) - connection_id 用于 unsubscribe 时防止误删新连接
         """
-        queue = asyncio.Queue()
-        self._connections[session_id] = queue
-        logger.info(f"SSE connection established for session: {session_id}")
-        return queue
+        import uuid
+        import queue as _queue
+        connection_id = str(uuid.uuid4())
+        q = _queue.SimpleQueue()
+
+        # 先回放 Redis STREAM 历史事件到队列，再注册连接
+        # 顺序很重要：先回放再注册，确保 push_to_session 只在注册后推送实时事件
+        # 避免回放和实时推送的竞态（即使无锁也安全：注册前的 push 会被丢弃，
+        # 但那些事件已在 Redis STREAM 中，下次重连时可回放）
+        replay_count = 0
+        if task_id:
+            buffered_events = event_buffer.replay(task_id, after_seq_no=last_seq_no)
+            for evt in buffered_events:
+                q.put(evt)
+            replay_count = len(buffered_events)
+            logger.info(f"[SSEGateway] Replayed {replay_count} events for session={session_id} task={task_id} after={last_seq_no}")
+
+        # 注册连接（放在回放之后，避免竞态）
+        self._connections[session_id] = (connection_id, q)
+        logger.info(f"[SSEGateway] SSE connection established for session: {session_id}, conn_id: {connection_id}, replayed: {replay_count}, active_sessions: {list(self._connections.keys())}")
+        return connection_id, q
     
-    def unsubscribe(self, session_id: str):
-        """断开 SSE 连接"""
+    def unsubscribe(self, session_id: str, connection_id: str):
+        """
+        断开 SSE 连接
+        
+        仅当 connection_id 匹配时才删除，防止旧连接误删新连接。
+        """
         if session_id in self._connections:
-            del self._connections[session_id]
-            logger.info(f"SSE connection closed for session: {session_id}")
+            stored_conn_id, _ = self._connections[session_id]
+            if stored_conn_id == connection_id:
+                del self._connections[session_id]
+                logger.info(f"[SSEGateway] SSE connection closed for session: {session_id}, conn_id: {connection_id}")
+            else:
+                logger.info(f"[SSEGateway] Skipping unsubscribe for stale connection: session={session_id}, old_conn={connection_id}, current_conn={stored_conn_id}")
+        else:
+            logger.info(f"[SSEGateway] Session {session_id} already removed from connections")
     
     def register_track(self, track_id: str, session_id: str):
         """注册 Track 到 Session 映射"""
         self._track_to_session[track_id] = session_id
     
-    async def push(
+    def push(
         self,
         event_type: str,
         task_id: str,
         track_id: str,
         data: dict,
-    ):
+    ) -> bool:
         """
-        Track 推送消息
+        Track 推送消息（同步方法，线程安全）
         
         Args:
             event_type: 事件类型
             task_id: 任务 ID
             track_id: 轨道 ID
             data: 事件数据
+            
+        Returns:
+            是否成功推送
         """
         session_id = self._track_to_session.get(track_id)
         if not session_id:
             logger.warning(f"No session found for track: {track_id}")
-            return
+            return False
         
-        if session_id not in self._connections:
-            logger.debug(f"No SSE connection for session: {session_id}")
-            return
+        return self.push_to_session(event_type, task_id, session_id, data, track_id=track_id)
+    
+    def push_to_session(
+        self,
+        event_type: str,
+        task_id: str,
+        session_id: str,
+        data: dict,
+        track_id: str = "",
+    ) -> bool:
+        """
+        直接推送到 Session（同步方法，线程安全，不依赖事件循环）
         
+        使用 SimpleQueue.put() 实现跨线程/跨事件循环推送。
+        可在任意线程和事件循环中调用。
+        
+        Args:
+            event_type: 事件类型
+            task_id: 任务 ID
+            session_id: 会话 ID
+            data: 事件数据
+            track_id: 轨道 ID（可选）
+            
+        Returns:
+            是否成功推送
+        """
         msg = {
             "event": event_type,
             "task_id": task_id,
@@ -293,46 +354,23 @@ class SSEGateway:
             "data": data,
             "timestamp": datetime.now().isoformat(),
         }
-        
-        await self._connections[session_id].put(msg)
-        logger.debug(f"Pushed event {event_type} to session {session_id}")
-    
-    async def push_to_session(
-        self,
-        event_type: str,
-        task_id: str,
-        session_id: str,
-        data: dict,
-    ) -> bool:
-        """
-        直接推送到 Session（不依赖 Track 路由）
-        
-        用于研究启动前阶段（澄清、计划生成等）的消息推送。
-        当没有 Track 时，可以直接使用 session_id 推送消息。
-        
-        Args:
-            event_type: 事件类型
-            task_id: 任务 ID
-            session_id: 会话 ID
-            data: 事件数据
-            
-        Returns:
-            是否成功推送
-        """
+
+        # 写入 Redis STREAM（轻量操作，<1ms），双写保证断线可回放
+        try:
+            seq_no = event_buffer.write(task_id, event_type, data)
+            msg["seq_no"] = seq_no  # Redis 自增 ID 附加到消息中
+            logger.debug(f"[SSEGateway] EventBuffer write success: task={task_id} seq_no={seq_no}")
+        except Exception as e:
+            logger.warning(f"[SSEGateway] EventBuffer write failed: {e}, continuing without seq_no")
+            msg["seq_no"] = "0-0"  # 降级：不中断实时推送
+
         if session_id not in self._connections:
-            logger.warning(f"No SSE connection for session: {session_id}")
+            logger.warning(f"[SSEGateway] No SSE connection for session: {session_id}, active_sessions={list(self._connections.keys())}")
             return False
-        
-        msg = {
-            "event": event_type,
-            "task_id": task_id,
-            "track_id": "",  # 澄清阶段没有 track
-            "data": data,
-            "timestamp": datetime.now().isoformat(),
-        }
-        
-        await self._connections[session_id].put(msg)
-        logger.info(f"[SSEGateway] Pushed event {event_type} to session {session_id} (direct routing)")
+
+        _, q = self._connections[session_id]
+        q.put(msg)  # SimpleQueue.put() 线程安全，永不阻塞
+        logger.info(f"[SSEGateway] Pushed event {event_type} to session {session_id} seq_no={msg.get('seq_no', 'N/A')}")
         return True
 
 
@@ -528,32 +566,27 @@ class ResearchService:
     
     # ============ 公共 API ============
     
-    async def prepare_task(
+
+
+    async def start_research(
         self,
         query: str,
         mode: ResearchMode,
         session_id: str,
     ) -> ResearchTaskModel:
         """
-        准备研究任务（创建任务但不执行）
-        
-        这是两阶段启动模式的第一阶段：
-        1. 创建任务并持久化到数据库
-        2. 返回 task_id 给前端
-        3. 前端建立 SSE 连接
-        4. 前端调用 execute_task 启动执行
-        
-        这种设计解决了 SSE 时序竞争问题：
-        - 确保 SSE 连接在异步任务执行前已建立
-        - 避免澄清消息在连接建立前推送导致丢失
-        
+        发起研究任务（单阶段启动）
+
+        创建任务并立即提交异步执行，前端通过 Redis STREAM 回放机制
+        确保不丢失事件，无需两阶段启动。
+
         Args:
             query: 用户问题
             mode: 研究模式
             session_id: 会话 ID
-            
+
         Returns:
-            创建的研究任务（尚未执行）
+            创建的研究任务
         """
         # 1. 创建任务（数据库持久化）
         db_task = DBResearchTask(
@@ -562,94 +595,34 @@ class ResearchService:
             mode=mode.value,
             status=ResearchStatus.PENDING.value,
         )
-        
-        # 保存到数据库
+
         db = self._get_db()
         try:
             db.add(db_task)
             db.commit()
             db.refresh(db_task)
-            
-            logger.info(
-                f"[ResearchService] Task prepared: {db_task.id}, mode={mode.value}, session={session_id}"
-            )
+            logger.info(f"[ResearchService] Task created: {db_task.id}, mode={mode.value}, session={session_id}")
         except Exception as e:
             db.rollback()
-            logger.error(f"[ResearchService] Failed to prepare task: {e}")
+            logger.error(f"[ResearchService] Failed to create task: {e}")
             raise
         finally:
             if self._db is None:
                 db.close()
-        
+
         # 2. 转换为内存模型
         task = self._db_task_to_model(db_task)
         self._tasks[task.id] = task
         task.started_at = datetime.now()
-        
-        # 注意：不启动异步任务，等待 execute_task 调用
-        return task
-    
-    async def execute_task(self, task_id: str) -> ResearchTaskModel:
-        """
-        执行研究任务
-        
-        这是两阶段启动模式的第二阶段：
-        - 前端已建立 SSE 连接
-        - 启动异步任务执行研究流程
-        
-        Args:
-            task_id: 任务 ID
-            
-        Returns:
-            研究任务
-            
-        Raises:
-            ResearchError: 如果任务不存在或状态不对
-        """
-        task = self._get_task(task_id)
-        
-        # 验证任务状态
-        if task.status != ResearchStatus.PENDING:
-            raise ResearchError(
-                f"Task {task_id} is not in PENDING state, "
-                f"current state: {task.status.value}"
-            )
-        
-        logger.info(f"[ResearchService] Executing task: {task_id}, mode={task.mode.value}")
-        
-        # 根据模式启动异步任务（使用后台执行器）
+
+        # 3. 立即提交异步执行（Redis STREAM 保证事件不丢失）
         if task.mode == ResearchMode.STANDARD:
-            background_executor.submit(self._execute_standard_research(task), task_id=f"research_{task_id}")
+            background_executor.submit(self._execute_standard_research(task), task_id=f"research_{task.id}")
         else:
-            background_executor.submit(self._analyze_and_plan(task), task_id=f"research_{task_id}")
-        
-        return task
-    
-    async def start_research(
-        self,
-        query: str,
-        mode: ResearchMode,
-        session_id: str,
-    ) -> ResearchTaskModel:
-        """
-        发起研究任务（单阶段启动，向后兼容）
-        
-        注意：此方法存在 SSE 时序竞争问题，推荐使用 prepare_task + execute_task
-        
-        Args:
-            query: 用户问题
-            mode: 研究模式
-            session_id: 会话 ID
-            
-        Returns:
-            创建的研究任务
-        """
-        # 创建任务
-        task = await self.prepare_task(query, mode, session_id)
-        
-        # 立即执行（存在时序竞争风险）
-        await self.execute_task(task.id)
-        
+            background_executor.submit(self._analyze_and_plan(task), task_id=f"research_{task.id}")
+
+        logger.info(f"[ResearchService] Research execution submitted for task {task.id}")
+
         return task
     
     async def resume_research(
@@ -967,7 +940,7 @@ class ResearchService:
             task.update_timestamp()
             
             # 推送进度
-            await self._push_progress(task, "正在分析问题的核心意图")
+            self._push_progress(task, "正在分析问题的核心意图")
             
             # 2. 分析问题（使用 LLM）
             analysis_result = await self._analyze_query(task.query)
@@ -985,7 +958,7 @@ class ResearchService:
                 task.update_timestamp()
                 
                 # 推送事件
-                await self._push_clarification_needed(task, task.clarification_questions)
+                self._push_clarification_needed(task, task.clarification_questions)
                 
                 logger.info(f"Task {task.id} waiting for clarification")
             else:
@@ -1016,7 +989,7 @@ class ResearchService:
             task.current_step = "正在生成研究计划"
             task.update_timestamp()
             
-            await self._push_progress(task, "正在生成研究计划")
+            self._push_progress(task, "正在生成研究计划")
             
             # 2. 使用 ToT 生成研究计划
             plan = await self._generate_plan_with_tot(task, clarification_answers)
@@ -1028,7 +1001,7 @@ class ResearchService:
             task.update_timestamp()
             
             # 推送计划生成事件
-            await self._push_plan_generated(task, plan)
+            self._push_plan_generated(task, plan)
             
             logger.info(f"Plan generated for task {task.id}, waiting for confirmation")
             
@@ -1054,11 +1027,12 @@ class ResearchService:
             task.current_step = "正在执行研究"
             task.update_timestamp()
             
-            # 推送初始进度事件，让前端知道研究已开始
-            await self._push_progress(task, "研究计划已确认，开始执行研究...")
+            # 记录开始时间，用于计算 elapsed_seconds
+            research_start_time = time.time()
             
             # 2. 为每个方向创建 Track
             tracks = []
+            direction_progress_list = []
             for direction_spec in plan.directions:
                 track = self.track_manager.create_track(
                     session_id=task.session_id,
@@ -1070,11 +1044,91 @@ class ResearchService:
                 
                 # 注册到 SSE Gateway
                 sse_gateway.register_track(track.track_id, task.session_id)
+                
+                # 构建方向进度数据
+                direction_progress_list.append({
+                    "direction_id": track.direction_id,
+                    "direction_name": track.topic,
+                    "status": "pending",
+                    "progress": 0,
+                    "current_action": "等待开始",
+                    "learnings_count": 0,
+                    "sources_count": 0,
+                })
             
             self._tracks[task.id] = tracks
             
-            # 3. 并行执行所有研究方向（使用 asyncio.to_thread 实现真正的并行）
-            # 因为 Agent.execute 是同步方法，需要在线程池中执行
+            # 3. 推送初始研究进度事件（包含所有方向）
+            # 事件类型不加 research_ 前缀，前端 useStream.ts 会自动添加
+            elapsed = int(time.time() - research_start_time)
+            sse_gateway.push_to_session(
+                event_type="progress",
+                task_id=task.id,
+                session_id=task.session_id,
+                data={
+                    "progress": {
+                        "task_id": task.id,
+                        "status": "executing",
+                        "mode": task.mode.value,
+                        "progress_pct": 0,
+                        "elapsed_seconds": elapsed,
+                        "directions": direction_progress_list,
+                        "current_action": "研究计划已确认，开始执行研究...",
+                    }
+                },
+            )
+            logger.info(f"[ResearchService] Initial research progress pushed for task {task.id}")
+            
+            # 4. 启动定时进度推送任务（每5秒推送一次带最新 elapsed_seconds 的进度）
+            progress_update_stop = asyncio.Event()
+            
+            async def periodic_progress_update():
+                """定期推送研究进度更新（更新 elapsed_seconds 和方向状态）"""
+                while not progress_update_stop.is_set():
+                    try:
+                        await asyncio.wait_for(progress_update_stop.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass  # 正常超时，继续推送
+                    
+                    if progress_update_stop.is_set():
+                        break
+                    
+                    # 收集当前各方向状态（Track 已有 progress/current_action 属性，直接读取）
+                    current_directions = []
+                    for t in tracks:
+                        current_directions.append({
+                            "direction_id": t.direction_id,
+                            "direction_name": t.topic,
+                            "status": t.status.value,
+                            "progress": t.progress,
+                            "current_action": t.current_action,
+                            "learnings_count": len(t.learnings),
+                            "sources_count": len(t.sources),
+                        })
+                    
+                    elapsed_now = int(time.time() - research_start_time)
+                    sse_gateway.push_to_session(
+                        event_type="progress",
+                        task_id=task.id,
+                        session_id=task.session_id,
+                        data={
+                            "progress": {
+                                "task_id": task.id,
+                                "status": "executing",
+                                "mode": task.mode.value,
+                                "progress_pct": 0,
+                                "elapsed_seconds": elapsed_now,
+                                "directions": current_directions,
+                                "current_action": task.current_step or "正在执行研究",
+                            }
+                        },
+                    )
+                    logger.debug(f"[ResearchService] Periodic progress update for task {task.id}, elapsed={elapsed_now}s")
+            
+            # 启动定时进度更新
+            progress_task = asyncio.create_task(periodic_progress_update())
+            
+            # 5. 并行执行所有研究方向
             logger.info(f"[ResearchService] Starting parallel execution of {len(tracks)} directions")
             
             async def run_direction_in_thread(track: ResearchTrack) -> AgentResult:
@@ -1090,32 +1144,67 @@ class ResearchService:
                 for track in tracks
             ], return_exceptions=True)
             
-            # 4. 检查结果
+            # 停止定时进度推送
+            progress_update_stop.set()
+            try:
+                await asyncio.wait_for(progress_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"[ResearchService] Progress update task did not stop in time for task {task.id}")
+            
+            # 6. 检查结果
             failed_count = sum(1 for r in results if isinstance(r, Exception))
             if failed_count > 0:
                 logger.warning(f"{failed_count}/{len(tracks)} directions failed")
             
-            # 5. 流式生成最终报告
+            # 7. 推送研究方向全部完成进度
+            final_directions = []
+            for t in tracks:
+                final_directions.append({
+                    "direction_id": t.direction_id,
+                    "direction_name": t.topic,
+                    "status": t.status.value if hasattr(t.status, 'value') else str(t.status),
+                    "progress": 100 if (hasattr(t, 'status') and t.status == TrackStatus.COMPLETED) else (t.progress if hasattr(t, 'progress') else 0),
+                    "current_action": "研究方向完成" if (hasattr(t, 'status') and t.status == TrackStatus.COMPLETED) else "研究方向失败",
+                    "learnings_count": len(t.learnings) if hasattr(t, 'learnings') else 0,
+                    "sources_count": len(t.sources) if hasattr(t, 'sources') else 0,
+                })
+            
+            elapsed_final = int(time.time() - research_start_time)
+            sse_gateway.push_to_session(
+                event_type="progress",
+                task_id=task.id,
+                session_id=task.session_id,
+                data={
+                    "progress": {
+                        "task_id": task.id,
+                        "status": "generating_report",
+                        "mode": task.mode.value,
+                        "progress_pct": 80,
+                        "elapsed_seconds": elapsed_final,
+                        "directions": final_directions,
+                        "current_action": "所有研究方向已完成，正在聚合生成研究报告...",
+                    }
+                },
+            )
+            logger.info(f"[ResearchService] All directions completed for task {task.id}, generating report")
+            
+            # 8. 流式生成最终报告
             task.current_step = "正在生成研究报告"
             task.update_timestamp()
-            await self._push_progress(task, "正在生成研究报告")
+            self._push_progress(task, "正在聚合所有方向的研究结果，生成研究报告...")
             
             # 使用流式报告生成
             report = await self._generate_report_stream(task, tracks)
             
-            # 6. 完成
+            # 9. 完成
             task.status = ResearchStatus.COMPLETED
             task.completed_at = datetime.now()
             task.update_timestamp()
             
             # 推送完成事件
-            await self._push_completed(task, report)
+            self._push_completed(task, report)
             
-            # 7. 后台异步生成 PDF（不阻塞用户查看报告）
-            background_executor.submit(
-                self._generate_pdf_background(task.id, report),
-                task_id=f"pdf_{task.id}"
-            )
+            # PDF generation removed - use Markdown copy instead
             
             logger.info(f"Research completed for task {task.id}")
             
@@ -1126,6 +1215,19 @@ class ResearchService:
             task.status = ResearchStatus.FAILED
             task.error_message = str(e)
             task.update_timestamp()
+            # 推送错误事件
+            try:
+                sse_gateway.push_to_session(
+                    event_type="error",
+                    task_id=task.id,
+                    session_id=task.session_id,
+                    data={
+                        "error_message": str(e),
+                        "recoverable": False,
+                    },
+                )
+            except Exception:
+                pass
     
     def _execute_direction_sync(
         self,
@@ -1134,6 +1236,9 @@ class ResearchService:
     ) -> AgentResult:
         """
         执行单个研究方向（同步版本，用于线程池执行）
+        
+        同时更新 Track 的 progress 和 current_action 属性，
+        供 periodic_progress_update 读取最新状态。
         
         Args:
             task: 研究任务
@@ -1145,10 +1250,11 @@ class ResearchService:
         try:
             logger.info(f"[ResearchService] Executing direction {track.direction_id} for task {task.id}")
             
-            # 推送进度（使用同步方式）
-            self._push_track_progress_sync(track, "exploring", "正在搜索相关信息", 0)
-            
             # Phase 1: 探索（搜索）
+            track.progress = 0
+            track.current_action = "正在搜索相关信息"
+            self._push_track_progress_sync(track, "exploring", track.current_action, track.progress)
+            
             explorer = self._get_explorer_agent()
             explorer_context = AgentContext(
                 task_id=task.id,
@@ -1164,7 +1270,10 @@ class ResearchService:
             explore_result = explorer.execute(explorer_context, track)
             
             if not explore_result.success:
+                track.progress = 0
+                track.current_action = f"搜索失败: {explore_result.error}"
                 track.fail_current_step(explore_result.error)
+                self._push_track_progress_sync(track, "failed", track.current_action, track.progress)
                 return explore_result
             
             # 更新 Track
@@ -1175,10 +1284,16 @@ class ResearchService:
             
             track.advance_step()
             
-            # 推送进度
-            self._push_track_progress_sync(track, "analyzing", "正在分析搜索结果", 33)
+            # 搜索完成后推送中间进度（含发现数和来源数）
+            track.progress = 20
+            track.current_action = f"搜索完成，找到 {len(track.sources)} 个来源，{len(track.learnings)} 条发现"
+            self._push_track_progress_sync(track, "exploring", track.current_action, track.progress)
             
             # Phase 2: 分析
+            track.progress = 33
+            track.current_action = "正在分析搜索结果"
+            self._push_track_progress_sync(track, "analyzing", track.current_action, track.progress)
+            
             analyzer = self._get_analyzer_agent()
             analyzer_context = AgentContext(
                 task_id=task.id,
@@ -1193,7 +1308,10 @@ class ResearchService:
             analyze_result = analyzer.execute(analyzer_context, track)
             
             if not analyze_result.success:
+                track.progress = 33
+                track.current_action = f"分析失败: {analyze_result.error}"
                 track.fail_current_step(analyze_result.error)
+                self._push_track_progress_sync(track, "failed", track.current_action, track.progress)
                 return analyze_result
             
             # 更新 Track
@@ -1202,10 +1320,16 @@ class ResearchService:
             
             track.advance_step()
             
-            # 推送进度
-            self._push_track_progress_sync(track, "synthesizing", "正在总结研究发现", 66)
+            # 分析完成后推送中间进度
+            track.progress = 50
+            track.current_action = f"分析完成，已发现 {len(track.learnings)} 条关键信息"
+            self._push_track_progress_sync(track, "analyzing", track.current_action, track.progress)
             
             # Phase 3: 总结
+            track.progress = 66
+            track.current_action = "正在总结研究发现"
+            self._push_track_progress_sync(track, "synthesizing", track.current_action, track.progress)
+            
             synthesizer = self._get_synthesizer_agent()
             synthesizer_context = AgentContext(
                 task_id=task.id,
@@ -1222,15 +1346,23 @@ class ResearchService:
             if synthesis_result.success:
                 track.context["summary"] = synthesis_result.data.get("markdown", "")
                 track.advance_step()
-                self._push_track_progress_sync(track, "completed", "研究方向完成", 100)
+                track.progress = 100
+                track.current_action = "研究方向完成"
+                self._push_track_progress_sync(track, "completed", track.current_action, track.progress)
             else:
+                track.progress = 66
+                track.current_action = f"总结失败: {synthesis_result.error}"
                 track.fail_current_step(synthesis_result.error)
+                self._push_track_progress_sync(track, "failed", track.current_action, track.progress)
             
             return synthesis_result
             
         except Exception as e:
             logger.error(f"Direction execution failed: {e}", exc_info=True)
+            track.progress = 0
+            track.current_action = f"执行异常: {e}"
             track.fail_current_step(str(e))
+            self._push_track_progress_sync(track, "failed", track.current_action, 0)
             return AgentResult(success=False, error=str(e))
     
     def _push_track_progress_sync(
@@ -1241,29 +1373,30 @@ class ResearchService:
         progress_pct: int,
     ):
         """
-        推送 Track 进度（同步版本）
+        推送 Track 进度（同步版本，线程安全）
         
-        使用 asyncio.run_coroutine_threadsafe 在后台事件循环中执行异步推送
+        push_to_session 现在是同步方法，使用 SimpleQueue 实现，
+        可从任意线程安全调用，无需 asyncio.run_coroutine_threadsafe
         """
         try:
-            # 在后台事件循环中执行异步推送
-            future = asyncio.run_coroutine_threadsafe(
-                sse_gateway.push(
-                    event_type="progress",
-                    task_id=track.task_id,
-                    track_id=track.track_id,
-                    data={
-                        "phase": phase,
-                        "summary": message,
-                        "progress_pct": progress_pct,
+            sse_gateway.push_to_session(
+                event_type="direction_progress",
+                task_id=track.task_id,
+                session_id=track.session_id,
+                data={
+                    "direction_progress": {
                         "direction_id": track.direction_id,
                         "direction_name": track.topic,
-                    },
-                ),
-                background_executor._loop
+                        "status": phase,
+                        "progress": progress_pct,
+                        "current_action": message,
+                        "learnings_count": len(track.learnings),
+                        "sources_count": len(track.sources),
+                    }
+                },
+                track_id=track.track_id,
             )
-            # 不等待结果，立即返回
-            logger.debug(f"[ResearchService] Progress pushed for direction {track.direction_id}: {phase}")
+            logger.info(f"[ResearchService] Progress pushed for direction {track.direction_id}: {phase} - {message}")
         except Exception as e:
             logger.warning(f"[ResearchService] Failed to push progress: {e}")
     
@@ -1610,35 +1743,70 @@ class ResearchService:
     
     # ============ SSE 推送 ============
     
-    async def _push_progress(self, task: ResearchTaskModel, message: str):
-        """推送进度更新"""
-        # 判断是否有 track，选择不同的推送方式
-        tracks = self._tracks.get(task.id, [])
-        if tracks:
-            # 有 track 时使用传统方式
-            track_id = tracks[0].track_id
-            await sse_gateway.push(
-                event_type="progress",
-                task_id=task.id,
-                track_id=track_id,
-                data={
-                    "summary": message,
-                    "progress_pct": 0,
-                },
-            )
+    def _estimate_remaining_time(self, task_id: str, elapsed_seconds: float, directions: list) -> str:
+        """后端计算剩余时间估算，随 progress 事件推送。
+
+        后端有更准确的执行上下文（搜索延迟、LLM 调用耗时），
+        前端仅负责展示，无需自行计算。
+        """
+        if elapsed_seconds < 5:
+            return "计算中..."
+
+        completed = sum(1 for d in directions if d.status == TrackStatus.COMPLETED)
+        total = len(directions)
+
+        if total == 0 or completed == 0:
+            return "约 3-5 分钟" if elapsed_seconds < 30 else "约 2-4 分钟"
+
+        ratio = completed / total
+        estimated_total = elapsed_seconds / ratio
+        remaining = max(0, estimated_total - elapsed_seconds)
+
+        if remaining < 30:
+            return "不到 1 分钟"
+        elif remaining < 90:
+            return "约 1 分钟"
+        elif remaining < 180:
+            return "约 2-3 分钟"
+        elif remaining < 300:
+            return "约 3-5 分钟"
         else:
-            # 没有 track 时直接使用 session_id 推送
-            await sse_gateway.push_to_session(
-                event_type="progress",
-                task_id=task.id,
-                session_id=task.session_id,
-                data={
-                    "summary": message,
+            return f"约 {int(remaining / 60)} 分钟"
+
+    def _push_progress(self, task: ResearchTaskModel, message: str):
+        """推送进度更新（含后端时间估算）"""
+        # 计算已用时间
+        elapsed_seconds = 0.0
+        if task.started_at:
+            elapsed_seconds = (datetime.now() - task.started_at).total_seconds()
+
+        # 估算剩余时间
+        directions = self._tracks.get(task.id, [])
+        estimated_remaining = self._estimate_remaining_time(task.id, elapsed_seconds, directions)
+
+        # 统一使用 push_to_session，事件类型使用 progress
+        # 前端 useStream.ts 会自动添加 research_ 前缀，变成 research_progress
+        sse_gateway.push_to_session(
+            event_type="progress",
+            task_id=task.id,
+            session_id=task.session_id,
+            data={
+                "progress": {
+                    "task_id": task.id,
+                    "status": task.status.value,
+                    "mode": task.mode.value,
                     "progress_pct": 0,
+                    "elapsed_seconds": int(elapsed_seconds),
+                    "directions": [],
+                    "current_action": message,
+                    "estimated_remaining": estimated_remaining,
                 },
-            )
+                "summary": message,
+            },
+        )
+        logger.info(f"[ResearchService] Progress pushed: {message[:50]}, estimated_remaining={estimated_remaining}")
     
-    async def _push_track_progress(
+    def _push_track_progress(
         self,
         track: ResearchTrack,
         phase: str,
@@ -1646,29 +1814,37 @@ class ResearchService:
         progress_pct: int,
     ):
         """推送 Track 进度"""
-        await sse_gateway.push(
-            event_type="progress",
+        # 事件类型不加 research_ 前缀，前端会自动添加
+        sse_gateway.push_to_session(
+            event_type="direction_progress",
             task_id=track.task_id,
-            track_id=track.track_id,
+            session_id=track.session_id,
             data={
-                "phase": phase,
-                "summary": message,
-                "progress_pct": progress_pct,
+                "direction_progress": {
+                    "direction_id": track.direction_id,
+                    "direction_name": track.topic,
+                    "status": phase,
+                    "progress": progress_pct,
+                    "current_action": message,
+                    "learnings_count": len(track.learnings),
+                    "sources_count": len(track.sources),
+                }
             },
         )
     
-    async def _push_clarification_needed(
+    def _push_clarification_needed(
         self,
         task: ResearchTaskModel,
         questions: list[ClarificationQuestion],
     ):
         """推送需要澄清事件"""
         # 澄清阶段没有 track，直接使用 session_id 推送
-        success = await sse_gateway.push_to_session(
+        success = sse_gateway.push_to_session(
             event_type="clarification_needed",
             task_id=task.id,
             session_id=task.session_id,
             data={
+                "task_id": task.id,
                 "questions": [q.to_dict() for q in questions],
             },
         )
@@ -1678,15 +1854,18 @@ class ResearchService:
         else:
             logger.error(f"[ResearchService] Failed to push clarification event to session {task.session_id}")
     
-    async def _push_plan_generated(self, task: ResearchTaskModel, plan: ResearchPlanModel):
+    def _push_plan_generated(self, task: ResearchTaskModel, plan: ResearchPlanModel):
         """推送计划生成事件"""
         # 计划生成阶段可能没有 track，使用 session_id 推送
-        success = await sse_gateway.push_to_session(
+        success = sse_gateway.push_to_session(
             event_type="plan_generated",
             task_id=task.id,
             session_id=task.session_id,
             data={
+                "task_id": task.id,
                 "directions": [d.to_dict() for d in plan.directions],
+                "estimated_time": "约 2-5 分钟",
+                "can_modify": True,
             },
         )
         
@@ -1695,22 +1874,30 @@ class ResearchService:
         else:
             logger.error(f"[ResearchService] Failed to push plan event to session {task.session_id}")
     
-    async def _push_completed(self, task: ResearchTaskModel, report: ResearchReportModel):
+    def _push_completed(self, task: ResearchTaskModel, report: ResearchReportModel):
         """推送完成事件"""
-        tracks = self._tracks.get(task.id, [])
-        track_id = tracks[0].track_id if tracks else ""
+        # 计算研究用时
+        duration_seconds = 0
+        if task.started_at and task.completed_at:
+            duration_seconds = int((task.completed_at - task.started_at).total_seconds())
+        elif task.started_at:
+            duration_seconds = int((datetime.now() - task.started_at).total_seconds())
         
-        await sse_gateway.push(
+        # 使用 push_to_session 直接推送
+        # 事件类型不加 research_ 前缀，前端 useStream.ts 会自动添加
+        sse_gateway.push_to_session(
             event_type="completed",
             task_id=task.id,
-            track_id=track_id,
+            session_id=task.session_id,
             data={
+                "task_id": task.id,
                 "report_id": report.id,
                 "word_count": report.word_count,
                 "source_count": report.source_count,
-                "pdf_generating": True,  # 标记 PDF 正在后台生成
+                "duration_seconds": duration_seconds,
             },
         )
+        logger.info(f"[ResearchService] Completed event pushed for task {task.id}, duration={duration_seconds}s")
 
     # ============ 流式报告生成 ============
 
@@ -1734,9 +1921,6 @@ class ResearchService:
         """
         logger.info(f"[ResearchService] Starting streaming report generation for task {task.id}")
 
-        # 获取第一个 Track 用于 SSE 路由
-        track_id = tracks[0].track_id if tracks else ""
-
         # 构建上下文
         from services.deep_research.agents.base import AgentContext
         contexts = []
@@ -1752,20 +1936,47 @@ class ResearchService:
             )
             contexts.append(context)
 
-        # 使用 SynthesizerAgent 流式生成
-        synthesizer = self._get_synthesizer_agent()
+        # 直接使用 LLM 流式生成报告（不使用 SynthesizerAgent.synthesize_stream 避免双重推送）
         accumulated_content = ""
 
         try:
-            async for chunk in synthesizer.synthesize_stream(
-                contexts=contexts,
-                user_query=task.query,
-                title=f"研究报告：{task.query[:50]}",
-                sse_gateway=sse_gateway,
-                task_id=task.id,
-                track_id=track_id,
-            ):
-                accumulated_content += chunk
+            from agent.llm import get_llm
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from services.deep_research.agents.synthesizer_agent import SYNTHESIZER_SYSTEM_PROMPT
+
+            synthesizer = self._get_synthesizer_agent()
+            task_message = synthesizer._build_full_report_task(
+                contexts, task.query, f"研究报告：{task.query[:50]}"
+            )
+
+            llm = get_llm(streaming=True)
+            llm_messages = [
+                SystemMessage(content=SYNTHESIZER_SYSTEM_PROMPT),
+                HumanMessage(content=task_message),
+            ]
+
+            async for chunk in llm.astream(llm_messages):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                accumulated_content += content
+                
+                # 通过 SSE 推送报告流式内容到前端
+                try:
+                    sse_gateway.push_to_session(
+                        event_type="report_stream",
+                        task_id=task.id,
+                        session_id=task.session_id,
+                        data={
+                            "content": content,
+                            "accumulated": accumulated_content,
+                            "accumulated_length": len(accumulated_content),
+                            "task_id": task.id,
+                        },
+                    )
+                except Exception as push_err:
+                    logger.warning(f"[ResearchService] Failed to push report stream chunk: {push_err}")
+                    
+            logger.info(f"[ResearchService] LLM streaming completed, total length: {len(accumulated_content)}")
+                    
         except Exception as e:
             logger.error(f"[ResearchService] Streaming report failed: {e}", exc_info=True)
             # 降级：使用非流式生成
@@ -1847,72 +2058,21 @@ class ResearchService:
                 db.close()
 
         # 推送报告生成完成事件
-        from services.deep_research.events import create_report_complete_event
-        event = create_report_complete_event(
+        sse_gateway.push_to_session(
+            event_type="report_complete",
             task_id=task.id,
-            track_id=track_id,
-            report_id=report.id,
-            word_count=report.word_count,
-            source_count=report.source_count,
-            pdf_generating=True,
+            session_id=task.session_id,
+            data={
+                "report_id": report.id,
+                "word_count": report.word_count,
+                "source_count": report.source_count,
+                "task_id": task.id,
+            },
         )
-        await sse_gateway.push_event(event)
 
         logger.info(f"[ResearchService] Streaming report completed: {report.word_count} words")
         return report
 
-    async def _generate_pdf_background(self, task_id: str, report: ResearchReportModel):
-        """
-        后台异步生成 PDF
-
-        在报告生成完成后，异步生成 PDF 文件，
-        不阻塞用户查看报告内容。
-
-        Args:
-            task_id: 任务 ID
-            report: 研究报告
-        """
-        try:
-            logger.info(f"[ResearchService] Starting background PDF generation for task {task_id}")
-
-            from services.deep_research.pdf_exporter import PDFExporter
-
-            # 生成 PDF
-            exporter = PDFExporter()
-            pdf_bytes = exporter.export_pdf(
-                markdown_content=report.content_markdown,
-                title=report.title,
-            )
-
-            # 保存 PDF 路径到数据库
-            db = self._get_db()
-            try:
-                db_report = db.query(DBResearchReport).filter(
-                    DBResearchReport.task_id == uuid.UUID(task_id)
-                ).first()
-
-                if db_report:
-                    # 保存 PDF 到文件系统
-                    import os
-                    pdf_dir = os.path.join("outputs", "reports", task_id)
-                    os.makedirs(pdf_dir, exist_ok=True)
-                    pdf_path = os.path.join(pdf_dir, f"report.pdf")
-
-                    with open(pdf_path, 'wb') as f:
-                        f.write(pdf_bytes)
-
-                    db_report.pdf_path = pdf_path
-                    db.commit()
-                    logger.info(f"[ResearchService] PDF saved to: {pdf_path}")
-            except Exception as e:
-                db.rollback()
-                logger.error(f"[ResearchService] Failed to save PDF: {e}")
-            finally:
-                if self._db is None:
-                    db.close()
-
-        except Exception as e:
-            logger.error(f"[ResearchService] Background PDF generation failed: {e}", exc_info=True)
 
     # ============ 用户干预 ============
 
@@ -1949,15 +2109,14 @@ class ResearchService:
         logger.info(f"[ResearchService] Added intervention to task {task_id}: {message[:50]}...")
 
         # 推送干预确认事件
-        tracks = self._tracks.get(task_id, [])
-        track_id = tracks[0].track_id if tracks else ""
-        await sse_gateway.push(
-            event_type=SSEEventType.PROGRESS,
+        sse_gateway.push_to_session(
+            event_type="progress",
             task_id=task_id,
-            track_id=track_id,
+            session_id=task.session_id,
             data={
                 "summary": f"用户干预: {message[:100]}",
                 "intervention_received": True,
+                "task_id": task_id,
             },
         )
 
