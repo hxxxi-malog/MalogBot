@@ -169,6 +169,8 @@ def delete_session(session_id: str):
                 'error': '会话不存在'
             }), 404
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"[DELETE /sessions/{session_id}] 删除会话失败", exc_info=True)
         return jsonify({
             'error': f'删除会话失败: {str(e)}'
         }), 500

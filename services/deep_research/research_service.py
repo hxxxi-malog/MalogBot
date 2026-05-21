@@ -59,6 +59,9 @@ from models.research import (
 )
 from services.db_manager import db_manager
 
+# 导入会话存储，用于持久化研究消息到聊天历史
+from services.session_store import session_store
+
 # 导入 Redis
 from services.redis_service import redis_manager, is_redis_available
 
@@ -698,6 +701,10 @@ class ResearchService:
         task.status = ResearchStatus.CANCELLED
         task.update_timestamp()
         
+        # 持久化取消状态到数据库，确保刷新后前端能正确判断任务已终止
+        self._update_task_status(task_id, ResearchStatus.CANCELLED, completed_at=datetime.now())
+        logger.info(f"[ResearchService] Cancelled task {task_id} status persisted to database")
+        
         # 清理 Track
         tracks = self._tracks.get(task_id, [])
         for track in tracks:
@@ -923,11 +930,20 @@ class ResearchService:
             
         except ResearchCancelledError:
             logger.info(f"Research task {task.id} was cancelled")
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, "[研究已取消]"
+            )
         except Exception as e:
             logger.error(f"Standard research failed for task {task.id}: {e}", exc_info=True)
             task.status = ResearchStatus.FAILED
             task.error_message = str(e)
             task.update_timestamp()
+            # 持久化错误消息到会话历史
+            error_msg = f"研究执行失败: {str(e)}"
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, error_msg
+            )
+            logger.info(f"[ResearchService] Error message persisted for failed standard task {task.id}")
     
     async def _analyze_and_plan(self, task: ResearchTaskModel):
         """
@@ -975,6 +991,12 @@ class ResearchService:
             task.status = ResearchStatus.FAILED
             task.error_message = str(e)
             task.update_timestamp()
+            # 持久化错误消息到会话历史
+            error_msg = f"研究分析失败: {str(e)}"
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, error_msg
+            )
+            logger.info(f"[ResearchService] Error message persisted for failed deep task {task.id}")
     
     async def _generate_and_confirm_plan(
         self,
@@ -1008,6 +1030,12 @@ class ResearchService:
             # 推送计划生成事件
             self._push_plan_generated(task, plan)
             
+            # 计划生成完成，刷盘更新 assistant 占位消息
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, "研究计划已生成，等待用户确认"
+            )
+            logger.info(f"[ResearchService] Plan generated message persisted for task {task.id}")
+
             logger.info(f"Plan generated for task {task.id}, waiting for confirmation")
             
         except Exception as e:
@@ -1015,6 +1043,12 @@ class ResearchService:
             task.status = ResearchStatus.FAILED
             task.error_message = str(e)
             task.update_timestamp()
+            # 持久化错误消息到会话历史
+            error_msg = f"研究计划生成失败: {str(e)}"
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, error_msg
+            )
+            logger.info(f"[ResearchService] Error message persisted for failed plan task {task.id}")
     
     async def _execute_research(self, task: ResearchTaskModel, plan: ResearchPlanModel):
         """
@@ -1208,18 +1242,35 @@ class ResearchService:
             
             # 推送完成事件
             self._push_completed(task, report)
-            
+
+            # 持久化助手消息到会话历史，确保刷新后可恢复
+            assistant_content = report.content_markdown or ''
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, assistant_content
+            )
+            logger.info(f"[ResearchService] Assistant message persisted for task {task.id}, content_length={len(assistant_content)}")
+
             # PDF generation removed - use Markdown copy instead
             
             logger.info(f"Research completed for task {task.id}")
             
         except ResearchCancelledError:
             logger.info(f"Research task {task.id} was cancelled during execution")
+            # 持久化取消状态消息
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, "[研究已取消]"
+            )
         except Exception as e:
             logger.error(f"Research execution failed for task {task.id}: {e}", exc_info=True)
             task.status = ResearchStatus.FAILED
             task.error_message = str(e)
             task.update_timestamp()
+            # 持久化错误消息到会话历史
+            error_msg = f"研究执行失败: {str(e)}"
+            session_store.update_message_by_research_task_id(
+                task.session_id, task.id, error_msg
+            )
+            logger.info(f"[ResearchService] Error message persisted for failed task {task.id}")
             # 推送错误事件
             try:
                 sse_gateway.push_to_session(

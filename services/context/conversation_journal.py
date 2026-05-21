@@ -317,8 +317,26 @@ class ConversationJournalService:
                 with open(journal_path, 'r', encoding='utf-8') as f:
                     all_lines = f.readlines()
                 
-                # 从后往前读取，确保最近的消息优先
+                # 去重：同一 research_task_id 的消息只保留最后一条
+                # 因为 update_message_by_research_task_id 会追加覆盖记录到 JSONL
+                seen_research_task_ids = set()
+                deduped_lines = []
                 for line in reversed(all_lines):
+                    if line.strip():
+                        try:
+                            msg = json.loads(line)
+                            rt_id = (msg.get('metadata') or {}).get('research_task_id')
+                            if rt_id and rt_id in seen_research_task_ids:
+                                continue  # 跳过旧的占位消息，保留最新的覆盖记录
+                            if rt_id:
+                                seen_research_task_ids.add(rt_id)
+                            deduped_lines.append(line)
+                        except:
+                            deduped_lines.append(line)
+                deduped_lines.reverse()
+                
+                # 从后往前读取，确保最近的消息优先
+                for line in reversed(deduped_lines):
                     if line.strip():
                         try:
                             msg = json.loads(line)

@@ -41,6 +41,7 @@ class ResearchTask(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
     
     # 关系
+    session = relationship("Session", back_populates="research_tasks")
     plan = relationship("ResearchPlan", back_populates="task", uselist=False, cascade="all, delete-orphan")
     directions = relationship("ResearchDirection", back_populates="task", cascade="all, delete-orphan")
     report = relationship("ResearchReport", back_populates="task", uselist=False, cascade="all, delete-orphan")

@@ -30,6 +30,7 @@ class Session(Base):
     
     # 关系
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
+    research_tasks = relationship("ResearchTask", back_populates="session", cascade="all, delete-orphan")
     
     def to_dict(self):
         """转换为字典"""
@@ -92,12 +93,16 @@ class Message(Base):
     tool_calls = Column(Text, nullable=True)  # 用于 assistant 角色：JSON 格式的工具调用列表
     tool_name = Column(String(100), nullable=True)  # 工具名称（用于 tool 角色）
     
+    # 研究任务关联字段（用于按 task_id 查找和更新 assistant 消息，实现分阶段刷盘）
+    research_task_id = Column(String(100), nullable=True, index=True)  # 关联的研究任务ID
+    
     # 关系
     session = relationship("Session", back_populates="messages")
     
     # 索引
     __table_args__ = (
         Index('idx_messages_session_timestamp', 'session_id', 'timestamp'),
+        Index('idx_messages_research_task_id', 'research_task_id'),
     )
     
     def to_dict(self):
@@ -119,6 +124,10 @@ class Message(Base):
                 result['tool_calls'] = json.loads(self.tool_calls)
             except:
                 result['tool_calls'] = self.tool_calls
+        
+        # 研究任务关联字段
+        if self.research_task_id:
+            result['research_task_id'] = self.research_task_id
         
         return result
 

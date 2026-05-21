@@ -73,7 +73,16 @@ class SessionStore:
     
     def delete_session(self, session_id: str) -> bool:
         """
-        删除会话及其所有消息
+        删除会话及其所有关联数据
+        
+        ORM cascade 自动级联删除：
+        - research_tasks → plan/direction/report/search
+        - messages
+        
+        需手动删除（无 ORM cascade）：
+        - context_archives
+        - conversation_journals
+        - long_term_memories
         
         Args:
             session_id: 会话ID
@@ -81,12 +90,31 @@ class SessionStore:
         Returns:
             是否删除成功
         """
+        from models.database import ContextArchive, LongTermMemory, ConversationJournal
+        
         with db_manager.get_session() as session:
             sess = session.query(Session).filter_by(session_id=session_id).first()
-            if sess:
-                session.delete(sess)
-                return True
-            return False
+            if not sess:
+                return False
+            
+            # 1. 手动删除无 ORM cascade 的关联表
+            session.query(ContextArchive).filter_by(session_id=session_id).delete()
+            session.query(ConversationJournal).filter_by(session_id=session_id).delete()
+            session.query(LongTermMemory).filter_by(session_id=session_id).delete()
+            
+            # 2. 删除会话主记录（ORM cascade 自动删除 research_tasks 和 messages）
+            session.delete(sess)
+            
+            logger.info(f"[session_store] 会话 {session_id} 及所有关联数据库记录已删除")
+        
+        # 7. 清理磁盘文件（JSONL 等），需在数据库事务提交后执行
+        try:
+            self.context_compactor.clear_session(session_id)
+            logger.info(f"[session_store] 会话 {session_id} 磁盘文件已清理")
+        except Exception as e:
+            logger.error(f"[session_store] 清理会话 {session_id} 磁盘文件失败: {e}")
+        
+        return True
     
     def session_exists(self, session_id: str) -> bool:
         """
@@ -178,7 +206,8 @@ class SessionStore:
         content: str,
         tool_call_id: str = None,
         tool_calls: list = None,
-        tool_name: str = None
+        tool_name: str = None,
+        research_task_id: str = None
     ) -> bool:
         """
         添加消息到历史（双重存储：数据库 + JSONL）
@@ -194,6 +223,7 @@ class SessionStore:
             tool_call_id: 工具调用ID（用于 tool 角色）
             tool_calls: 工具调用列表（用于 assistant 角色）
             tool_name: 工具名称（用于 tool 角色）
+            research_task_id: 关联的研究任务ID（用于深度研究消息分阶段刷盘）
             
         Returns:
             是否添加成功
@@ -213,7 +243,8 @@ class SessionStore:
                 timestamp=now,
                 tool_call_id=tool_call_id,
                 tool_calls=json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
-                tool_name=tool_name
+                tool_name=tool_name,
+                research_task_id=research_task_id
             )
             session.add(message)
             
@@ -223,15 +254,21 @@ class SessionStore:
                 sess.updated_at = now
         
         # 2. 写入JSONL文件（通过context_compactor）
+        # 如果有 research_task_id，在 metadata 中标记以便后续去重
+        jsonl_metadata = None
+        if research_task_id:
+            jsonl_metadata = {'research_task_id': research_task_id, 'type': 'placeholder'}
         self.context_compactor.append_message(
             session_id=session_id,
             role=role,
             content=content,
             tool_call_id=tool_call_id,
             tool_calls=tool_calls,
-            tool_name=tool_name
+            tool_name=tool_name,
+            metadata=jsonl_metadata
         )
         
+        logger.info(f"[session_store] 消息已写入: session={session_id}, role={role}, research_task_id={research_task_id}")
         return True
     
     def get_messages(self, session_id: str, limit: Optional[int] = None) -> List[Dict]:
@@ -364,6 +401,59 @@ class SessionStore:
                 session.add(message)
             
             return True
+    
+    def update_message_by_research_task_id(
+        self,
+        session_id: str,
+        research_task_id: str,
+        content: str
+    ) -> bool:
+        """
+        按研究任务ID更新 assistant 消息内容（分阶段刷盘）
+        
+        用于深度研究流程中，在关键节点更新关联的 assistant 消息：
+        - 计划生成完成 → 更新为"研究计划已生成"
+        - 研究完成 → 更新为最终报告
+        - 研究失败 → 更新为错误信息
+        - 研究取消 → 更新为取消信息
+        
+        Args:
+            session_id: 会话ID
+            research_task_id: 研究任务ID
+            content: 新的消息内容
+            
+        Returns:
+            是否更新成功
+        """
+        with db_manager.get_session() as session:
+            msg = session.query(Message).filter_by(
+                session_id=session_id,
+                research_task_id=research_task_id,
+                role='assistant'
+            ).first()
+            
+            if not msg:
+                logger.warning(f"[session_store] 未找到 research_task_id={research_task_id} 的 assistant 消息，跳过更新")
+                return False
+            
+            msg.content = content
+            
+            # 更新会话的 updated_at 时间
+            session.query(Session).filter_by(session_id=session_id).update(
+                {'updated_at': datetime.now()}
+            )
+        
+        # 同步更新 JSONL 文件：追加一条带 research_task_id 标记的覆盖记录
+        # 读取上下文时，同一 research_task_id 的消息只保留最后一条（去重逻辑）
+        self.context_compactor.append_message(
+            session_id=session_id,
+            role='assistant',
+            content=content,
+            metadata={'research_task_id': research_task_id, 'type': 'update'}
+        )
+        
+        logger.info(f"[session_store] 消息已更新: session={session_id}, research_task_id={research_task_id}, content_len={len(content)}")
+        return True
     
     def get_message_count(self, session_id: str) -> int:
         """

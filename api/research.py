@@ -30,6 +30,7 @@ from services.deep_research.research_service import (
 from services.deep_research.models import ResearchMode, ResearchStatus
 from services.deep_research.events import SSEEventType
 from services.deep_research.report_generator import ReportGenerator
+from services.session_store import session_store
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,10 @@ def start_research():
         # 确定研究模式
         mode = ResearchMode.DEEP if req.mode == "deep" else ResearchMode.STANDARD
 
+        # 持久化用户消息到会话历史，确保刷新后可恢复
+        session_store.add_message(session_id, "user", req.query)
+        logger.info(f"[Research API] User message persisted for session {session_id}")
+
         # 发起研究
         task = run_async(service.start_research(
             query=req.query,
@@ -163,6 +168,11 @@ def start_research():
         ))
 
         logger.info(f"[Research API] Started research task {task.id}, mode={mode.value}")
+
+        # 创建空的 assistant 占位消息（携带 research_task_id），确保刷新后有消息可恢复
+        # 后续研究流程会在关键节点通过 update_message_by_research_task_id 更新此消息
+        session_store.add_message(session_id, "assistant", "", research_task_id=task.id)
+        logger.info(f"[Research API] Placeholder assistant message created for task {task.id}")
 
         # 通过 SSEGateway 推送 task_created 事件（经过 EventBuffer 持久化，断线可回放）
         sse_gateway.push_to_session(

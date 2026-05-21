@@ -107,7 +107,8 @@ class ContextCompactor:
         content: str,
         tool_call_id: str = None,
         tool_calls: list = None,
-        tool_name: str = None
+        tool_name: str = None,
+        metadata: dict = None
     ):
         """
         追加消息到Journal（JSONL文件）
@@ -122,6 +123,7 @@ class ContextCompactor:
             tool_call_id: 工具调用ID
             tool_calls: 工具调用列表
             tool_name: 工具名称
+            metadata: 额外元数据（如 research_task_id 标记）
         """
         conversation_journal.append_message(
             session_id=session_id,
@@ -129,7 +131,8 @@ class ContextCompactor:
             content=content,
             tool_call_id=tool_call_id,
             tool_calls=tool_calls,
-            tool_name=tool_name
+            tool_name=tool_name,
+            metadata=metadata
         )
     
     # ==================== 上下文窗口超限检测 ====================
