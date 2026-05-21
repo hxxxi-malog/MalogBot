@@ -854,11 +854,25 @@ onUnmounted(() => {
   stopTeamPolling()
 })
 
-// 滚动到底部
+// 智能滚动：仅在用户处于底部附近时自动滚动，避免用户上滑查看历史时被拉回底部
+function isUserNearBottom(): boolean {
+  const el = messageListRef.value
+  if (!el) return true
+  // 距离底部 100px 以内视为"在底部"
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 100
+}
+
+function scrollToBottom() {
+  const el = messageListRef.value
+  if (el) {
+    el.scrollTop = el.scrollHeight
+  }
+}
+
 watch(messages, () => {
   nextTick(() => {
-    if (messageListRef.value) {
-      messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+    if (isUserNearBottom()) {
+      scrollToBottom()
     }
   })
 }, { deep: true })

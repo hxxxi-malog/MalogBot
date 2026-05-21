@@ -15,6 +15,7 @@ import {
   store,
   setResearchTaskId,
   setResearching,
+  setResearchConfirmTime,
   setStreaming,
   setAbortController,
   updateLastMessage,
@@ -187,6 +188,7 @@ export function useResearch() {
               sources_count: dirProgress.sources_count,
             }],
             current_action: dirProgress.current_action,
+            estimated_remaining: event.estimated_remaining as string | undefined,
           })
           appendResearchProgressLog({
             id: `${dirProgress.direction_id}-${Date.now()}`,
@@ -356,6 +358,9 @@ export function useResearch() {
       if (currentPlan) {
         setResearchPlan({ ...currentPlan, can_modify: false })
       }
+
+      // 记录确认时间，用于从确认后开始计时
+      setResearchConfirmTime(Date.now())
 
       setStreaming(true)
       updateLastMessage('研究计划已确认，正在启动研究...')

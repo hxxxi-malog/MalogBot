@@ -38,6 +38,7 @@ interface AppState {
   research: {
     taskId: string | null
     isResearching: boolean
+    confirmTime: number | null  // 确认计划的时间戳(ms)，用于从确认后开始计时
   }
 }
 
@@ -68,6 +69,7 @@ const store = reactive<AppState>({
   research: {
     taskId: null,
     isResearching: false,
+    confirmTime: null,
   },
 })
 
@@ -129,6 +131,11 @@ export const isResearching = computed(() => store.research.isResearching)
  * 当前研究任务 ID
  */
 export const researchTaskId = computed(() => store.research.taskId)
+
+/**
+ * 确认计划的时间戳
+ */
+export const researchConfirmTime = computed(() => store.research.confirmTime)
 
 // ==================== Session Actions ====================
 
@@ -356,6 +363,13 @@ export function setResearching(value: boolean) {
 }
 
 /**
+ * 设置确认计划的时间戳
+ */
+export function setResearchConfirmTime(time: number | null) {
+  store.research.confirmTime = time
+}
+
+/**
  * 更新研究进度
  */
 export function updateResearchProgress(progress: ResearchProgress | undefined) {
@@ -472,6 +486,7 @@ export function clearClarification() {
 export function clearResearch() {
   store.research.taskId = null
   store.research.isResearching = false
+  store.research.confirmTime = null
   store.settings.researchMode = 'standard'
 }
 

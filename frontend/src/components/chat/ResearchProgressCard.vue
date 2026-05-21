@@ -12,9 +12,11 @@ import {
   ExternalLink,
   BookOpen,
   Lightbulb,
-  Loader2
+  Loader2,
+  Timer
 } from 'lucide-vue-next'
 import type { ResearchProgress, ResearchDirectionProgress, ResearchProgressLogEntry } from '@/types'
+import { researchConfirmTime } from '@/stores'
 
 const props = defineProps<{
   progress: ResearchProgress
@@ -26,31 +28,70 @@ const emit = defineEmits<{
 }>()
 
 // 本地计时器：基于后端推送的 elapsed_seconds 作为基准，本地持续递增
+// 深度研究模式下，计时从确认计划后开始（使用 researchConfirmTime）
+// 标准研究模式下，计时从任务创建后开始
 const localElapsedSeconds = ref(0)
 let timerInterval: ReturnType<typeof setInterval> | null = null
+const isTimerRunning = ref(false)
 
-// 监听后端推送的 elapsed_seconds 更新本地基准
-watch(() => props.progress.elapsed_seconds, (newVal) => {
-  // 只有当后端推送的时间比本地大时才更新（防止回退）
-  if (newVal > localElapsedSeconds.value) {
-    localElapsedSeconds.value = newVal
+// 判断计时是否应启动
+function shouldTimerRun(): boolean {
+  // 标准研究模式：一开始就计时
+  if (props.progress.mode === 'standard') return true
+  // 深度研究模式：确认计划后才计时
+  return !!researchConfirmTime.value
+}
+
+// 启动计时器
+function startTimer() {
+  if (isTimerRunning.value) return
+  isTimerRunning.value = true
+
+  // 计算初始已用时间
+  if (researchConfirmTime.value && props.progress.mode === 'deep') {
+    // 深度研究：从确认时间开始计算
+    localElapsedSeconds.value = Math.floor((Date.now() - researchConfirmTime.value) / 1000)
+  } else {
+    localElapsedSeconds.value = props.progress.elapsed_seconds || 0
   }
-})
 
-onMounted(() => {
-  // 初始化本地计时器
-  localElapsedSeconds.value = props.progress.elapsed_seconds || 0
-  // 每秒递增
   timerInterval = setInterval(() => {
     localElapsedSeconds.value++
   }, 1000)
-})
+}
 
-onUnmounted(() => {
+// 停止计时器
+function stopTimer() {
   if (timerInterval) {
     clearInterval(timerInterval)
     timerInterval = null
   }
+  isTimerRunning.value = false
+}
+
+// 监听后端推送的 elapsed_seconds 更新本地基准（仅标准研究模式使用）
+watch(() => props.progress.elapsed_seconds, (newVal) => {
+  // 标准研究模式下，同步后端时间
+  if (props.progress.mode === 'standard' && newVal > localElapsedSeconds.value) {
+    localElapsedSeconds.value = newVal
+  }
+})
+
+// 监听是否应启动计时器
+watch(() => shouldTimerRun(), (shouldRun) => {
+  if (shouldRun) {
+    startTimer()
+  }
+}, { immediate: true })
+
+onMounted(() => {
+  if (shouldTimerRun()) {
+    startTimer()
+  }
+})
+
+onUnmounted(() => {
+  stopTimer()
 })
 
 // 展开/折叠状态
@@ -272,6 +313,10 @@ function formatTimestamp(date: Date): string {
           <Clock class="w-4 h-4" />
           <span>{{ formattedTime }}</span>
         </div>
+        <div class="estimated-remaining" v-if="progress.estimated_remaining">
+          <Timer class="w-4 h-4" />
+          <span>{{ progress.estimated_remaining }}</span>
+        </div>
         <button class="cancel-btn" @click="emit('cancel')">
           <XCircle class="w-4 h-4" />
           <span>取消</span>
@@ -470,6 +515,19 @@ function formatTimestamp(date: Date): string {
   padding: 6px 12px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 8px;
+}
+
+.estimated-remaining {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #818CF8;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 12px;
+  background: rgba(129, 140, 248, 0.1);
+  border-radius: 8px;
+  border: 1px solid rgba(129, 140, 248, 0.15);
 }
 
 .cancel-btn {

@@ -216,22 +216,22 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
         class="attachment-card"
       />
 
-<!-- 研究进度卡片 -->
-<ResearchProgressCard
-  v-if="hasResearchProgress && researchProgress"
-  :progress="researchProgress"
-  :progress-logs="researchProgressLogs"
+<!-- 研究计划确认卡片（计划应在进度之上，符合 spec FR-1 约定） -->
+<PlanConfirmCard
+  v-if="hasResearchPlan && researchPlan"
+  :plan="researchPlan"
   class="attachment-card"
+  @confirm="handleResearchConfirmPlan"
+  @modify="handleResearchModifyPlan"
   @cancel="handleResearchCancel"
 />
 
-      <!-- 研究计划确认卡片 -->
-      <PlanConfirmCard
-        v-if="hasResearchPlan && researchPlan"
-        :plan="researchPlan"
+      <!-- 研究进度卡片 -->
+      <ResearchProgressCard
+        v-if="hasResearchProgress && researchProgress"
+        :progress="researchProgress"
+        :progress-logs="researchProgressLogs"
         class="attachment-card"
-        @confirm="handleResearchConfirmPlan"
-        @modify="handleResearchModifyPlan"
         @cancel="handleResearchCancel"
       />
 
