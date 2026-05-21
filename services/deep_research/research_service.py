@@ -613,7 +613,12 @@ class ResearchService:
         # 2. 转换为内存模型
         task = self._db_task_to_model(db_task)
         self._tasks[task.id] = task
-        task.started_at = datetime.now()
+        started_at = datetime.now()
+        task.started_at = started_at
+
+        # 将 started_at 持久化到数据库，确保刷新后 duration_seconds 计算一致
+        self._update_task_status(task.id, ResearchStatus.PENDING, started_at=started_at)
+        logger.info(f"[ResearchService] Task {task.id} started_at persisted to DB: {started_at}")
 
         # 3. 立即提交异步执行（Redis STREAM 保证事件不丢失）
         if task.mode == ResearchMode.STANDARD:

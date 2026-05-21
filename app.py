@@ -221,6 +221,7 @@ def get_session_detail(session_id: str):
     返回：
     - session_info: 会话信息
     - messages: 消息历史
+    - research_tasks: 该会话关联的研究任务（含报告内容）
     """
     try:
         session_info = chat_service.get_session_info(session_id)
@@ -232,9 +233,70 @@ def get_session_detail(session_id: str):
         
         messages = chat_service.get_history(session_id)
         
+        # 查询该会话关联的研究任务及报告，用于前端恢复研究状态
+        research_tasks = []
+        try:
+            from sqlalchemy.orm import joinedload
+            from models.research import ResearchTask as DBResearchTask
+            from services.db_manager import db_manager
+            
+            db = db_manager.session_factory()
+            try:
+                # 使用 joinedload 预加载 plan 和 report，避免 N+1 查询
+                tasks = db.query(DBResearchTask).options(
+                    joinedload(DBResearchTask.plan),
+                    joinedload(DBResearchTask.report),
+                ).filter_by(session_id=session_id).all()
+                for task in tasks:
+                    # 计算研究用时（秒），优先使用 started_at（研究实际开始时间）
+                    # 回退到 created_at（任务创建时间）以兼容旧数据
+                    duration_seconds = 0
+                    if task.completed_at:
+                        start = task.started_at or task.created_at
+                        if start:
+                            duration_seconds = int((task.completed_at - start).total_seconds())
+
+                    task_data = {
+                        'task_id': str(task.id),
+                        'query': task.query,
+                        'mode': task.mode,
+                        'status': task.status,
+                        'created_at': task.created_at.isoformat() if task.created_at else None,
+                        'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+                        'duration_seconds': duration_seconds,
+                        'plan': None,
+                        'report_content': None,
+                        'report_word_count': None,
+                        'report_source_count': None,
+                    }
+                    
+                    # 从预加载的 plan 关系中获取研究计划
+                    plan = task.plan
+                    if plan and plan.directions:
+                        task_data['plan'] = {
+                            'directions': plan.directions,
+                            'is_confirmed': plan.is_confirmed,
+                        }
+                    
+                    # 从预加载的 report 关系中获取研究报告
+                    report = task.report
+                    if report and report.content_markdown:
+                        task_data['report_content'] = report.content_markdown
+                        task_data['report_word_count'] = report.word_count
+                        task_data['report_source_count'] = report.source_count
+                    
+                    research_tasks.append(task_data)
+            finally:
+                db.close()
+        except Exception as e:
+            # 研究任务查询失败不影响消息历史返回
+            import logging
+            logging.getLogger(__name__).warning(f"[Session Info] Failed to query research tasks for session {session_id}: {e}")
+        
         return jsonify({
             'session_info': session_info,
-            'messages': messages
+            'messages': messages,
+            'research_tasks': research_tasks,
         })
     except Exception as e:
         return jsonify({
