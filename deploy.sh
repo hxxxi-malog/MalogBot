@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ==================== MalogBot Deployment Script ====================
+# ==================== MalogBot v2.0 Deployment Script ====================
 # Usage: ./deploy.sh [command]
 # Commands:
 #   start       - Start all services
@@ -10,6 +10,7 @@
 #   logs        - Show logs
 #   status      - Show service status
 #   monitor     - Start with monitoring (Prometheus + Grafana)
+#   init-db     - Initialize database tables
 #   clean       - Remove all containers and volumes
 #   help        - Show this help message
 
@@ -146,13 +147,25 @@ clean_up() {
 # Initialize database
 init_db() {
     print_info "Initializing database tables..."
+    docker_compose exec malogbot python scripts/migrations/init_db.py
+    print_info "Initializing agent knowledge tables..."
     docker_compose exec malogbot python scripts/migrations/init_agent_knowledge_tables.py
+    print_info "Initializing knowledge base tables..."
+    docker_compose exec malogbot python scripts/migrations/init_kb_tables.py
+    print_info "Initializing MCP tables..."
+    docker_compose exec malogbot python scripts/migrations/init_mcp_tables.py
+    print_info "Initializing research tables..."
+    docker_compose exec malogbot python scripts/migrations/init_research_tables.py
+    print_info "Running incremental migrations..."
+    docker_compose exec malogbot python scripts/migrations/migrate_context_tables.py
+    docker_compose exec malogbot python scripts/migrations/migrate_memory_chunks.py
+    docker_compose exec malogbot python scripts/migrations/migrate_add_onboarding.py
     print_success "Database initialized!"
 }
 
 # Show help
 show_help() {
-    echo "MalogBot Deployment Script"
+    echo "MalogBot v2.0 Deployment Script"
     echo ""
     echo "Usage: ./deploy.sh [command]"
     echo ""

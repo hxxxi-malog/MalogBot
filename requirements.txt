@@ -58,3 +58,7 @@ redis>=4.5.0
 # PDF 导出
 weasyprint>=60.0  # PDF 渲染
 markdown>=3.5.0  # Markdown 转 HTML
+
+# 网页内容清洗（深度研究）
+trafilatura>=1.6.0  # 网页正文提取
+beautifulsoup4>=4.12.0  # HTML 解析

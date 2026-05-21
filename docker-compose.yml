@@ -1,3 +1,7 @@
+# MalogBot v2.0 Docker Compose Configuration
+# Usage: docker compose up -d
+# With monitoring: docker compose --profile monitoring up -d
+
 services:
   # ==================== Main Application ====================
   malogbot:
@@ -39,6 +43,15 @@ services:
       - ENABLE_MMR=${ENABLE_MMR:-true}
       - MMR_ALPHA=${MMR_ALPHA:-0.7}
 
+      # RAG Query Optimization
+      - ENABLE_ENHANCED_RAG=${ENABLE_ENHANCED_RAG:-true}
+      - QUERY_OPT_ENABLE_COREFERENCE=${QUERY_OPT_ENABLE_COREFERENCE:-true}
+      - QUERY_OPT_ENABLE_STEP_BACK=${QUERY_OPT_ENABLE_STEP_BACK:-true}
+      - QUERY_OPT_ENABLE_DECOMPOSITION=${QUERY_OPT_ENABLE_DECOMPOSITION:-true}
+      - QUERY_OPT_ENABLE_MULTI_QUERY=${QUERY_OPT_ENABLE_MULTI_QUERY:-true}
+      - QUERY_OPT_MAX_SUB_QUESTIONS=${QUERY_OPT_MAX_SUB_QUESTIONS:-5}
+      - QUERY_OPT_MAX_VARIANTS=${QUERY_OPT_MAX_VARIANTS:-3}
+
       # Bootstrap Configuration
       - BOOTSTRAP_KNOWLEDGE_BUDGET=${BOOTSTRAP_KNOWLEDGE_BUDGET:-8000}
       - BOOTSTRAP_MEMORY_BUDGET=${BOOTSTRAP_MEMORY_BUDGET:-4000}
@@ -49,13 +62,25 @@ services:
       - MEMORY_TOKEN_BUDGET=${MEMORY_TOKEN_BUDGET:-2000}
       - MEMORY_RELEVANCE_THRESHOLD=${MEMORY_RELEVANCE_THRESHOLD:-0.65}
 
+      # Context Configuration
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-128000}
+      - COMPACT_THRESHOLD_RATIO=${COMPACT_THRESHOLD_RATIO:-0.8}
+      - KEEP_RECENT_MESSAGES=${KEEP_RECENT_MESSAGES:-10}
+      - KEEP_RECENT_TOOL_RESULTS=${KEEP_RECENT_TOOL_RESULTS:-3}
+
       # Web Search Configuration
       - BAIDU_MCP_API_KEY=${BAIDU_MCP_API_KEY}
+      - BAIDU_MCP_URL=${BAIDU_MCP_URL:-https://qianfan.baidubce.com/v2/tools/web-search/mcp}
       - WEB_SEARCH_ENABLED=${WEB_SEARCH_ENABLED:-false}
 
       # Agent Configuration
       - BASH_TIMEOUT=${BASH_TIMEOUT:-30}
-      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-128000}
+      - SUB_AGENT_DEFAULT_MODE=${SUB_AGENT_DEFAULT_MODE:-default}
+      - SUB_AGENT_FORK_TIMEOUT=${SUB_AGENT_FORK_TIMEOUT:-300}
+      - SUB_AGENT_RECURSION_LIMIT=${SUB_AGENT_RECURSION_LIMIT:-50}
+
+      # MCP Configuration
+      - MCP_ENABLED=${MCP_ENABLED:-true}
 
       # LangSmith (Optional)
       - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
@@ -76,7 +101,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
   # ==================== PostgreSQL Database ====================
   postgres:
@@ -109,7 +134,7 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     networks:
       - malogbot-network
     healthcheck:
