@@ -82,12 +82,13 @@ function getPriorityText(priority: number) {
   <div class="plan-confirm-card">
     <!-- 标题 -->
     <div class="card-header">
-      <div class="header-icon">
-        <ClipboardList class="w-5 h-5" />
+      <div class="header-icon" :class="{ 'header-icon-confirmed': !plan.can_modify }">
+        <Check v-if="!plan.can_modify" class="w-5 h-5" />
+        <ClipboardList v-else class="w-5 h-5" />
       </div>
       <div class="header-text">
-        <h3 class="card-title">研究计划确认</h3>
-        <p class="card-subtitle">以下是针对您问题的研究方向，请确认后开始研究</p>
+        <h3 class="card-title">{{ plan.can_modify ? '研究计划确认' : '研究计划已确认' }}</h3>
+        <p class="card-subtitle">{{ plan.can_modify ? '以下是针对您问题的研究方向，请确认后开始研究' : '研究方向已确认，正在执行中' }}</p>
       </div>
     </div>
 
@@ -167,14 +168,14 @@ function getPriorityText(priority: number) {
       </template>
     </div>
 
-    <!-- 操作按钮 -->
-    <div class="actions">
+    <!-- 操作按钮（已确认时隐藏） -->
+    <div class="actions" v-if="plan.can_modify">
       <template v-if="!isEditing">
         <button class="cancel-btn" @click="emit('cancel')">
           <X class="w-4 h-4" />
           <span>取消研究</span>
         </button>
-        <button v-if="plan.can_modify" class="modify-btn" @click="startEdit">
+        <button class="modify-btn" @click="startEdit">
           <Edit3 class="w-4 h-4" />
           <span>修改计划</span>
         </button>
@@ -221,6 +222,10 @@ function getPriorityText(priority: number) {
   align-items: center;
   justify-content: center;
   color: white;
+}
+
+.header-icon-confirmed {
+  background: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
 }
 
 .header-text {

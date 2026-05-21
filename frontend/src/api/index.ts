@@ -307,31 +307,8 @@ export const teamApi = {
  */
 export const researchApi = {
   /**
-   * 准备研究任务（两阶段启动模式 - 第一阶段）
-   * 创建任务但不启动执行，返回 task_id
-   */
-  prepare: (query: string, mode: 'standard' | 'deep', signal: AbortSignal) =>
-    fetch(`${BASE_URL}/api/research/prepare`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, mode }),
-      signal,
-    }),
-
-  /**
-   * 启动研究任务执行（两阶段启动模式 - 第二阶段）
-   * 在 SSE 连接建立后调用
-   */
-  startWithTaskId: (taskId: string, signal: AbortSignal) =>
-    fetch(`${BASE_URL}/api/research/start/${taskId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-    }),
-
-  /**
-   * 发起研究（单阶段启动，向后兼容）
-   * 注意：存在 SSE 时序竞争问题，推荐使用 prepare + startWithTaskId
+   * 发起研究（单阶段启动）
+   * 创建任务并立即提交异步执行，Redis STREAM 保证事件不丢失
    */
   start: (query: string, mode: 'standard' | 'deep', signal: AbortSignal) =>
     fetch(`${BASE_URL}/api/research/start`, {
@@ -386,22 +363,16 @@ export const researchApi = {
     request<{ task: ResearchTask }>(`/api/research/${taskId}/confirm`, { method: 'POST' }),
 
   /**
-   * SSE 事件流
+   * SSE 事件流 URL（供 fetchEventSource 使用）
+   * 支持 Last-Event-Seq-No 请求头实现增量回放
    */
-  events: (taskId: string, signal: AbortSignal) =>
-    fetch(`${BASE_URL}/api/research/${taskId}/events`, { signal }),
+  eventsUrl: (taskId: string) => `${BASE_URL}/api/research/${taskId}/events`,
 
   /**
    * 获取历史研究列表
    */
   history: () =>
     request<{ tasks: ResearchTask[] }>('/api/research/history'),
-
-  /**
-   * 下载报告
-   */
-  downloadReport: (taskId: string, format: 'markdown' | 'pdf' = 'markdown') =>
-    fetch(`${BASE_URL}/api/research/${taskId}/report/download?format=${format}`),
 
   /**
    * 发送干预消息（研究过程中）

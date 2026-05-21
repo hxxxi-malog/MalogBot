@@ -4,7 +4,7 @@
  */
 
 import { reactive, computed } from 'vue'
-import type { Session, Message, KnowledgeBase, MessageAttachments, TeamStatus, ResearchProgress, ResearchPlanConfirmEvent, ClarificationQuestion } from '@/types'
+import type { Session, Message, KnowledgeBase, MessageAttachments, TeamStatus, ResearchProgress, ResearchPlanConfirmEvent, ClarificationQuestion, ResearchProgressLogEntry } from '@/types'
 
 /**
  * 应用状态接口
@@ -369,6 +369,52 @@ export function updateResearchProgress(progress: ResearchProgress | undefined) {
       researchProgress: progress
     }
     console.log('[Store] Research progress updated:', progress)
+  }
+}
+
+/**
+ * 追加研究进度日志（瀑布流显示）
+ */
+export function appendResearchProgressLog(entry: ResearchProgressLogEntry) {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.role === 'assistant') {
+    if (!lastMessage.attachments) {
+      lastMessage.attachments = {}
+    }
+    if (!lastMessage.attachments.researchProgressLogs) {
+      lastMessage.attachments.researchProgressLogs = []
+    }
+    
+    // 检查是否已存在相同的日志（避免重复）
+    const existingLogs = lastMessage.attachments.researchProgressLogs
+    const lastLog = existingLogs[existingLogs.length - 1]
+    if (lastLog && 
+        lastLog.direction_id === entry.direction_id && 
+        lastLog.phase === entry.phase &&
+        lastLog.progress === entry.progress) {
+      return // 跳过重复日志
+    }
+    
+    // 追加新日志
+    lastMessage.attachments.researchProgressLogs.push(entry)
+    
+    // 限制日志数量（最多保留 100 条）
+    if (lastMessage.attachments.researchProgressLogs.length > 100) {
+      lastMessage.attachments.researchProgressLogs = 
+        lastMessage.attachments.researchProgressLogs.slice(-100)
+    }
+    
+    console.log('[Store] Research progress log appended:', entry)
+  }
+}
+
+/**
+ * 清除研究进度日志
+ */
+export function clearResearchProgressLogs() {
+  const lastMessage = store.chat.messages[store.chat.messages.length - 1]
+  if (lastMessage && lastMessage.role === 'assistant' && lastMessage.attachments) {
+    lastMessage.attachments.researchProgressLogs = []
   }
 }
 

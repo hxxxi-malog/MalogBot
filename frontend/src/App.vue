@@ -25,17 +25,13 @@ import {
   setIntegratingContent,
   researchMode,
   setResearching,
-  setResearchTaskId,
-  clearResearch,
-  setClarificationQuestions,
-  setResearchPlan,
 } from './stores'
-import { sessionApi, knowledgeApi, webSearchApi, chatApi, teamApi, researchApi } from './api'
-import { useStream } from './composables/useStream'
+import { sessionApi, knowledgeApi, webSearchApi, chatApi, teamApi } from './api'
+import { useResearch } from './composables/useResearch'
+import { parseSSEStream } from './composables/useStream'
 import { generateId } from './utils'
-// 不需要额外导入类型
 
-const { streamEvents, createAbortController, reset } = useStream()
+const { startResearch: researchStart } = useResearch()
 
 // 模态框状态
 const showMCPModal = ref(false)
@@ -212,228 +208,32 @@ async function handleStartChat(message: string) {
   }
 }
 
-// 启动研究（标准或深度）- 使用两阶段启动模式
+// 启动研究（标准或深度）- 委托给 useResearch
 async function startResearch(query: string, mode: 'standard' | 'deep') {
   console.log('[App] Starting research:', mode, query.substring(0, 50) + '...')
 
-  // 重置累积内容
   accumulatedContent = ''
 
   setStreaming(true)
   setResearching(true)
 
-  const controller = createAbortController()
-  setAbortController(controller)
+  addMessage({
+    id: generateId(),
+    role: 'assistant',
+    content: '',
+    timestamp: new Date().toISOString(),
+  })
 
-  try {
-    // 添加 AI 消息占位
-    addMessage({
-      id: generateId(),
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString(),
-    })
-
-    // ========== 两阶段启动模式 ==========
-    // 阶段1: 准备任务（创建任务但不执行）
-    console.log('[App] Phase 1: Preparing task with mode:', mode)
-    const prepareResponse = await researchApi.prepare(query, mode, controller.signal)
-
-    if (!prepareResponse.ok) {
-      console.error('[App] Prepare task failed:', prepareResponse.status)
-      updateLastMessage(`研究准备失败: ${prepareResponse.status} ${prepareResponse.statusText}`)
-      return
-    }
-
-    const prepareData = await prepareResponse.json() as { task_id?: string; status?: string; error?: string }
-    console.log('[App] /prepare response:', prepareData)
-
-    if (!prepareData.task_id) {
-      console.error('[App] No task_id in /prepare response:', prepareData)
-      updateLastMessage('研究准备失败: 未获取到任务ID')
-      return
-    }
-
-    const taskId = prepareData.task_id
-    console.log('[App] Got task_id:', taskId)
-
-    // 设置 task_id
-    setResearchTaskId(taskId)
-    updateLastMessage('研究任务已创建，正在建立连接...')
-
-    // 阶段2: 建立 SSE 连接
-    console.log('[App] Phase 2: Establishing SSE connection...')
-    const eventsResponse = await researchApi.events(taskId, controller.signal)
-
-    if (!eventsResponse.ok) {
-      console.error('[App] Events connection failed:', eventsResponse.status)
-      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
-      return
-    }
-    console.log('[App] SSE connection established')
-
-    // 阶段3: 启动任务执行
-    console.log('[App] Phase 3: Starting task execution...')
-    const startResponse = await researchApi.startWithTaskId(taskId, controller.signal)
-
-    if (!startResponse.ok) {
-      console.error('[App] Start task failed:', startResponse.status)
-      updateLastMessage(`研究启动失败: ${startResponse.status} ${startResponse.statusText}`)
-      return
-    }
-
-    const startData = await startResponse.json() as { task_id?: string; task_status?: string; error?: string }
-    console.log('[App] /start response:', startData)
-
-    // 更新消息状态
-    updateLastMessage(mode === 'deep' ? '正在分析问题...' : '正在搜索分析...')
-
-    // 处理研究 SSE 事件
-    for await (const event of streamEvents(eventsResponse)) {
-      if (!getAbortController()) {
-        console.log('[App] Research stream aborted')
-        break
+  await researchStart(query, mode, async () => {
+    if (!store.session.currentId) {
+      const data = await sessionApi.create()
+      if (data.session_id) {
+        setSessionId(data.session_id)
       }
-      handleResearchEvent(event)
     }
-
-    console.log('[App] Research stream completed')
-  } catch (error: unknown) {
-    console.error('[App] Research error:', error)
-    if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        console.log('[App] Research aborted by user')
-      } else {
-        updateLastMessage(`研究出错: ${error.message}`)
-      }
-    } else {
-      updateLastMessage('研究出错，请重试')
-    }
-  } finally {
-    setStreaming(false)
-    setAbortController(null)
-    reset()
-  }
+  })
 
   await loadSessions()
-}
-
-// 处理研究事件
-function handleResearchEvent(event: { type: string; [key: string]: unknown }) {
-  console.log('[App] Research event:', event.type, event)
-
-  switch (event.type) {
-    // 研究任务创建
-    case 'research_task_created':
-      if (event.task_id) {
-        setResearchTaskId(event.task_id as string)
-      }
-      updateLastMessage('正在分析您的问题...')
-      break
-
-    // 分析中
-    case 'research_analyzing':
-      updateLastMessage('正在深度分析您的问题...')
-      break
-
-    // 需要澄清
-    case 'research_clarification_needed':
-      console.log('[App] Clarification needed:', event.questions, 'task_id:', event.task_id)
-      // 将澄清问题添加到消息 attachments 中，触发 ClarificationCard 显示
-      if (event.questions && Array.isArray(event.questions) && event.task_id) {
-        const questions = event.questions as Array<{ question: string; options?: string[] }>
-        const taskId = event.task_id as string
-        setClarificationQuestions(taskId, questions.map(q => ({
-          question: q.question,
-          options: q.options || [],
-        })))
-        updateLastMessage('请回答以下问题以帮助我更好地理解您的需求')
-      }
-      break
-
-    // 研究计划生成
-    case 'research_plan_generated':
-      console.log('[App] Plan generated:', event.task_id, event.directions)
-      // 将研究计划添加到消息 attachments 中，触发 PlanConfirmCard 显示
-      if (event.directions && Array.isArray(event.directions) && event.task_id) {
-        const directions = event.directions as Array<{
-          name: string
-          description: string
-          keywords: string[]
-          expected_findings?: string
-        }>
-        const taskId = event.task_id as string
-        setResearchPlan({
-          task_id: taskId,
-          directions: directions.map((d, i) => ({
-            id: `dir-${i}`,
-            name: d.name,
-            description: d.description,
-            keywords: d.keywords,
-            priority: i + 1,
-          })),
-          estimated_time: '约 2-5 分钟',
-          can_modify: true,
-        })
-        updateLastMessage('研究计划已生成，请确认后开始研究')
-      }
-      break
-
-    // 研究进度更新
-    case 'research_progress':
-      if (event.progress) {
-        console.log('[App] Progress:', event.progress)
-      }
-      if (event.content) {
-        accumulatedContent = event.content as string
-        updateLastMessage(accumulatedContent)
-      }
-      break
-
-    // 研究方向进度
-    case 'research_direction_progress':
-      console.log('[App] Direction progress:', event.direction_progress)
-      break
-
-    // 报告流式内容
-    case 'research_report_stream':
-      if (event.content) {
-        accumulatedContent += event.content as string
-        updateLastMessage(accumulatedContent)
-      }
-      break
-
-    // 研究完成
-    case 'research_completed':
-      console.log('[App] Research completed')
-      stopTeamPolling()
-      if (event.content) {
-        updateLastMessage(event.content as string)
-      }
-      // 更新消息附件，添加下载按钮
-      if (event.task_id) {
-        updateLastMessageAttachments({
-          researchCompleted: {
-            task_id: event.task_id as string,
-            report_url: event.report_url as string | undefined,
-            source_count: (event.source_count as number) || 0,
-            duration_seconds: (event.duration_seconds as number) || 0,
-          },
-        })
-      }
-      clearResearch()
-      break
-
-    // 错误
-    case 'research_error':
-      console.error('[App] Research error event:', event.message)
-      updateLastMessage(`研究出错: ${event.message || '未知错误'}`)
-      clearResearch()
-      break
-
-    default:
-      console.log('[App] Unhandled research event:', event.type)
-  }
 }
 
 // 发送消息给 LLM
@@ -441,7 +241,7 @@ async function sendMessageToLLM(content: string) {
   // 重置累积内容
   accumulatedContent = ''
   
-  const controller = createAbortController()
+  const controller = new AbortController()
   setStreaming(true)
   setAbortController(controller)
   
@@ -466,7 +266,7 @@ async function sendMessageToLLM(content: string) {
 
     // 处理流式响应
     let eventCount = 0
-    for await (const event of streamEvents(response)) {
+    for await (const event of parseSSEStream(response)) {
       eventCount++
       console.log('[App] Received event:', event.type, eventCount)
       
@@ -478,7 +278,8 @@ async function sendMessageToLLM(content: string) {
   } catch (error: unknown) {
     console.error('[App] Stream error:', error)
     if (error instanceof Error) {
-      if (error.name === 'AbortError') {
+      // AbortError 和浏览器中断流的 TypeError（如 BodyStreamBuffer was aborted）都视为用户主动中断
+      if (error.name === 'AbortError' || error.message?.includes('aborted')) {
         console.log('[App] Request aborted by user')
       } else {
         updateLastMessage(`发生错误: ${error.message}`)
@@ -489,7 +290,6 @@ async function sendMessageToLLM(content: string) {
   } finally {
     store.chat.isStreaming = false
     setAbortController(null)
-    reset()
   }
 
   // 刷新会话列表

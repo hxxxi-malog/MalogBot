@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { Download, FileText, Clock, BookOpen, CheckCircle } from 'lucide-vue-next'
+import { ref } from 'vue'
+import { Copy, Check, Clock, BookOpen } from 'lucide-vue-next'
 import type { ResearchCompletedData } from '@/types'
 
 const props = defineProps<{
   data: ResearchCompletedData
+  markdownContent?: string
 }>()
 
 const emit = defineEmits<{
   download: [taskId: string, format: 'markdown' | 'pdf']
 }>()
+
+// 复制状态
+const copyState = ref<'idle' | 'copying' | 'copied'>('idle')
 
 // 格式化时长
 function formatDuration(seconds: number): string {
@@ -20,14 +25,30 @@ function formatDuration(seconds: number): string {
   return secs > 0 ? `${mins} 分 ${secs} 秒` : `${mins} 分钟`
 }
 
-// 下载 Markdown 报告
-function downloadMarkdown() {
-  emit('download', props.data.task_id, 'markdown')
-}
+// 一键复制 Markdown 报告
+async function copyMarkdown() {
+  copyState.value = 'copying'
+  console.log('[ResearchCompletedCard] Copying markdown report, taskId:', props.data.task_id)
 
-// 下载 PDF 报告
-function downloadPdf() {
-  emit('download', props.data.task_id, 'pdf')
+  try {
+    const content = props.markdownContent || ''
+    if (!content) {
+      console.warn('[ResearchCompletedCard] No markdown content to copy')
+      copyState.value = 'idle'
+      return
+    }
+
+    await navigator.clipboard.writeText(content)
+    copyState.value = 'copied'
+    console.log('[ResearchCompletedCard] Markdown copied successfully, length:', content.length)
+
+    setTimeout(() => {
+      copyState.value = 'idle'
+    }, 2000)
+  } catch (e) {
+    console.error('[ResearchCompletedCard] Copy failed:', e)
+    copyState.value = 'idle'
+  }
 }
 </script>
 
@@ -36,11 +57,11 @@ function downloadPdf() {
     <!-- 标题 -->
     <div class="card-header">
       <div class="header-icon">
-        <CheckCircle class="w-5 h-5" />
+        <Check class="w-5 h-5" />
       </div>
       <div class="header-text">
         <h3 class="card-title">研究完成</h3>
-        <p class="card-subtitle">研究报告已生成，可下载查看</p>
+        <p class="card-subtitle">研究报告已生成</p>
       </div>
     </div>
 
@@ -58,17 +79,17 @@ function downloadPdf() {
       </div>
     </div>
 
-    <!-- 下载按钮 -->
-    <div class="download-actions">
-      <button class="download-btn download-md" @click="downloadMarkdown">
-        <FileText class="w-4 h-4" />
-        <span>Markdown</span>
-      </button>
-      <button class="download-btn download-pdf" @click="downloadPdf">
-        <Download class="w-4 h-4" />
-        <span>PDF</span>
-      </button>
-    </div>
+    <!-- 复制按钮 -->
+    <button
+      class="copy-btn"
+      :class="{ 'copy-btn-done': copyState === 'copied' }"
+      :disabled="copyState === 'copying'"
+      @click="copyMarkdown"
+    >
+      <Check v-if="copyState === 'copied'" class="w-4 h-4" />
+      <Copy v-else class="w-4 h-4" />
+      <span>{{ copyState === 'copied' ? '已复制' : copyState === 'copying' ? '复制中...' : '复制 Markdown 报告' }}</span>
+    </button>
   </div>
 </template>
 
@@ -145,45 +166,35 @@ function downloadPdf() {
   color: rgba(255, 255, 255, 0.6);
 }
 
-.download-actions {
-  display: flex;
-  gap: 12px;
-}
-
-.download-btn {
-  flex: 1;
+.copy-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  width: 100%;
   padding: 12px 20px;
   border-radius: 10px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: all 200ms;
-}
-
-.download-md {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.8);
-}
-
-.download-md:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
-.download-pdf {
   background: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
   border: none;
   color: white;
   box-shadow: 0 4px 12px rgba(34, 197, 94, 0.25);
 }
 
-.download-pdf:hover {
+.copy-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(34, 197, 94, 0.3);
+}
+
+.copy-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.copy-btn-done {
+  background: linear-gradient(135deg, #16A34A 0%, #15803D 100%);
 }
 </style>

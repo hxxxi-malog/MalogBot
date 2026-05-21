@@ -29,20 +29,15 @@ import {
   isResearching,
   researchTaskId,
   setResearchMode,
-  setResearchTaskId,
   setResearching,
-  updateResearchProgress,
-  setResearchPlan,
-  setClarificationQuestions,
-  clearClarification,
-  clearResearch,
 } from '@/stores'
-import { chatApi, sessionApi, webSearchApi, teamApi, researchApi } from '@/api'
-import { useStream } from '@/composables/useStream'
+import { chatApi, sessionApi, webSearchApi, teamApi } from '@/api'
+import { useResearch } from '@/composables/useResearch'
+import { parseSSEStream } from '@/composables/useStream'
 import { generateId } from '@/utils'
-import type { DirectionSpec, ClarificationQuestion, ResearchProgress } from '@/types'
+import type { DirectionSpec } from '@/types'
 
-const { streamEvents, abort, createAbortController, reset } = useStream()
+const { startResearch: researchStart, confirmPlan, clarify, clarifySkip, cancelResearch, sendIntervention, modifyPlan } = useResearch()
 const inputText = ref('')
 const messageListRef = ref<HTMLElement | null>(null)
 
@@ -96,7 +91,7 @@ async function sendMessage(content: string, isNewSession = false) {
   inputText.value = ''
   setStreaming(true)
 
-  const controller = createAbortController()
+  const controller = new AbortController()
   setAbortController(controller)
   
   try {
@@ -121,7 +116,7 @@ async function sendMessage(content: string, isNewSession = false) {
 
     // 处理流式响应
     let eventCount = 0
-    for await (const event of streamEvents(response)) {
+    for await (const event of parseSSEStream(response)) {
       eventCount++
       console.log('[ChatView] Received event:', event.type, event)
       
@@ -149,7 +144,6 @@ async function sendMessage(content: string, isNewSession = false) {
   } finally {
     setStreaming(false)
     setAbortController(null)
-    reset()
     console.log('[ChatView] Stream finished')
   }
 
@@ -485,7 +479,7 @@ async function handleConfirm(command: string, userMessage: string) {
   // 重置累积内容
   accumulatedContent = ''
   
-  const controller = createAbortController()
+  const controller = new AbortController()
   setAbortController(controller)
   
   try {
@@ -499,7 +493,7 @@ async function handleConfirm(command: string, userMessage: string) {
       timestamp: new Date().toISOString()
     })
     
-    for await (const event of streamEvents(response)) {
+    for await (const event of parseSSEStream(response)) {
       if (!getAbortController()) break
       handleStreamEvent(event)
     }
@@ -511,7 +505,6 @@ async function handleConfirm(command: string, userMessage: string) {
   } finally {
     setStreaming(false)
     setAbortController(null)
-    reset()
   }
   
   await loadSessions()
@@ -528,7 +521,7 @@ async function handleCancel(command: string, userMessage: string) {
   // 重置累积内容
   accumulatedContent = ''
   
-  const controller = createAbortController()
+  const controller = new AbortController()
   setAbortController(controller)
   
   try {
@@ -542,7 +535,7 @@ async function handleCancel(command: string, userMessage: string) {
       timestamp: new Date().toISOString()
     })
     
-    for await (const event of streamEvents(response)) {
+    for await (const event of parseSSEStream(response)) {
       if (!getAbortController()) break
       handleStreamEvent(event)
     }
@@ -554,7 +547,6 @@ async function handleCancel(command: string, userMessage: string) {
   } finally {
     setStreaming(false)
     setAbortController(null)
-    reset()
   }
 }
 
@@ -569,13 +561,13 @@ async function handleContinue() {
   // 重置累积内容
   accumulatedContent = ''
   
-  const controller = createAbortController()
+  const controller = new AbortController()
   setAbortController(controller)
   
   try {
     const response = await chatApi.continue(controller.signal)
     
-    for await (const event of streamEvents(response)) {
+    for await (const event of parseSSEStream(response)) {
       if (!getAbortController()) break
       handleStreamEvent(event)
     }
@@ -587,7 +579,6 @@ async function handleContinue() {
   } finally {
     setStreaming(false)
     setAbortController(null)
-    reset()
   }
   
   await loadSessions()
@@ -678,7 +669,7 @@ async function stopGeneration() {
     } catch (e) {
       console.error('[ChatView] Stop request error:', e)
     }
-    abort()
+    getAbortController()?.abort()
   }
   stopTeamPolling()
   setStreaming(false)
@@ -731,7 +722,7 @@ function handleSend() {
   }
 }
 
-// 发送研究干预消息
+// 发送研究干预消息（委托给 useResearch）
 async function sendResearchIntervention(message: string) {
   console.log('[ChatView] Sending research intervention:', message.substring(0, 50) + '...')
 
@@ -750,57 +741,14 @@ async function sendResearchIntervention(message: string) {
   })
   inputText.value = ''
 
-  const controller = createAbortController()
-  setAbortController(controller)
-
   try {
-    // 第一步：POST /intervene 获取响应（JSON）
-    console.log('[ChatView] Step 1: Calling /intervene endpoint...')
-    const interveneResponse = await researchApi.intervene(taskId, message, controller.signal)
-
-    if (!interveneResponse.ok) {
-      console.error('[ChatView] Intervention failed:', interveneResponse.status)
-      updateLastMessage(`发送干预消息失败: ${interveneResponse.status} ${interveneResponse.statusText}`)
-      return
-    }
-
-    // 解析 JSON 响应
-    const interveneData = await interveneResponse.json() as { task_id?: string; status?: string; error?: string }
-    console.log('[ChatView] /intervene response:', interveneData)
-
-    if (!interveneData.task_id) {
-      console.error('[ChatView] No task_id in /intervene response:', interveneData)
-      updateLastMessage('发送干预消息失败: 未获取到任务ID')
-      return
-    }
-
-    updateLastMessage('干预消息已发送，正在连接事件流...')
-
-    // 第二步：GET /events 建立 SSE 连接
-    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
-    const eventsResponse = await researchApi.events(taskId, controller.signal)
-
-    if (!eventsResponse.ok) {
-      console.error('[ChatView] Events connection failed:', eventsResponse.status)
-      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
-      return
-    }
-
-    // 处理干预响应的事件流
-    for await (const event of streamEvents(eventsResponse)) {
-      if (!getAbortController()) break
-      handleResearchEvent(event)
-    }
-
-    console.log('[ChatView] Intervention processed')
+    await sendIntervention(taskId, message)
+    console.log('[ChatView] Intervention sent successfully')
   } catch (error: unknown) {
     console.error('[ChatView] Intervention error:', error)
-    if (error instanceof Error && error.name !== 'AbortError') {
+    if (error instanceof Error && error.name !== 'AbortError' && !error.message?.includes('aborted')) {
       updateLastMessage('发送干预消息失败: ' + error.message)
     }
-  } finally {
-    setAbortController(null)
-    reset()
   }
 }
 
@@ -837,14 +785,12 @@ const selectedMode = computed({
 async function startResearch(query: string, mode: 'standard' | 'deep') {
   console.log('[ChatView] Starting research:', mode, query.substring(0, 50) + '...')
 
-  // 重置累积内容
   accumulatedContent = ''
 
   if (!store.session.currentId) {
     await createNewSession()
   }
 
-  // 添加用户消息
   addMessage({
     id: generateId(),
     role: 'user',
@@ -855,434 +801,52 @@ async function startResearch(query: string, mode: 'standard' | 'deep') {
   setStreaming(true)
   setResearching(true)
 
-  const controller = createAbortController()
-  setAbortController(controller)
+  addMessage({
+    id: generateId(),
+    role: 'assistant',
+    content: '',
+    timestamp: new Date().toISOString()
+  })
 
-  try {
-    // 添加 AI 消息占位
-    addMessage({
-      id: generateId(),
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString()
-    })
-
-    // 第一步：POST /start 获取 task_id（JSON 响应）
-    console.log('[ChatView] Step 1: Calling /start endpoint with mode:', mode)
-    const startResponse = await researchApi.start(query, mode, controller.signal)
-
-    if (!startResponse.ok) {
-      console.error('[ChatView] Research start failed:', startResponse.status)
-      updateLastMessage(`研究启动失败: ${startResponse.status} ${startResponse.statusText}`)
-      return
+  await researchStart(query, mode, async () => {
+    if (!store.session.currentId) {
+      await createNewSession()
     }
-
-    // 解析 JSON 响应，提取 task_id
-    const startData = await startResponse.json() as { task_id?: string; status?: string; error?: string }
-    console.log('[ChatView] /start response:', startData)
-
-    if (!startData.task_id) {
-      console.error('[ChatView] No task_id in /start response:', startData)
-      updateLastMessage('研究启动失败: 未获取到任务ID')
-      return
-    }
-
-    const taskId = startData.task_id
-    console.log('[ChatView] Got task_id:', taskId)
-
-    // 提前设置 task_id，确保后续事件处理可用
-    setResearchTaskId(taskId)
-    updateLastMessage(mode === 'deep' ? '研究任务已创建，正在分析问题...' : '研究任务已创建，正在搜索分析...')
-
-    // 第二步：GET /events 建立 SSE 连接
-    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
-    const eventsResponse = await researchApi.events(taskId, controller.signal)
-
-    if (!eventsResponse.ok) {
-      console.error('[ChatView] Events connection failed:', eventsResponse.status)
-      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
-      return
-    }
-
-    // 处理研究 SSE 事件
-    for await (const event of streamEvents(eventsResponse)) {
-      if (!getAbortController()) {
-        console.log('[ChatView] Research stream aborted')
-        break
-      }
-      handleResearchEvent(event)
-    }
-
-    console.log('[ChatView] Research stream completed')
-  } catch (error: unknown) {
-    console.error('[ChatView] Research error:', error)
-    if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        console.log('[ChatView] Research aborted by user')
-      } else {
-        updateLastMessage(`研究出错: ${error.message}`)
-      }
-    } else {
-      updateLastMessage('研究出错，请重试')
-    }
-  } finally {
-    setStreaming(false)
-    setAbortController(null)
-    reset()
-  }
+  })
 
   await loadSessions()
 }
 
-// 处理研究事件
-function handleResearchEvent(event: { type: string; [key: string]: unknown }) {
-  console.log('[ChatView] Research event:', event.type, event)
-  
-  switch (event.type) {
-    // 研究任务创建
-    case 'research_task_created':
-      if (event.task_id) {
-        setResearchTaskId(event.task_id as string)
-      }
-      updateLastMessage('正在分析您的问题...')
-      break
-    
-    // 分析中
-    case 'research_analyzing':
-      updateLastMessage('正在深度分析您的问题...')
-      break
-    
-    // 需要澄清
-    case 'research_clarification_needed':
-      if (event.questions && event.task_id) {
-        setClarificationQuestions(event.task_id as string, event.questions as ClarificationQuestion[])
-      }
-      break
-    
-    // 研究计划生成
-    case 'research_plan_generated':
-      if (event.task_id && event.directions) {
-        setResearchPlan({
-          task_id: event.task_id as string,
-          directions: event.directions as DirectionSpec[],
-          estimated_time: (event.estimated_time as string) || '约 2-5 分钟',
-          can_modify: (event.can_modify as boolean) !== false,
-        })
-        updateLastMessage('研究计划已生成，请确认后开始研究')
-      }
-      break
-    
-    // 研究进度更新
-    case 'research_progress':
-      // 后端推送的是 summary 和 progress_pct，不是 progress
-      if (event.summary) {
-        updateLastMessage(event.summary as string)
-      }
-      if (event.progress) {
-        updateResearchProgress(event.progress as ResearchProgress)
-      }
-      break
-    
-    // 研究方向进度
-    case 'research_direction_progress':
-      // 更新研究进度中的方向信息
-      if (event.direction_progress) {
-        const currentProgress = store.chat.messages[store.chat.messages.length - 1]?.attachments?.researchProgress
-        if (currentProgress && event.direction_progress) {
-          const dirProgress = event.direction_progress as { direction_id: string; direction_name: string; status: string; progress: number; current_action: string; learnings_count: number; sources_count: number }
-          const updatedDirections = currentProgress.directions.map(d => 
-            d.direction_id === dirProgress.direction_id ? { ...d, ...dirProgress } as typeof d : d
-          )
-          updateResearchProgress({ ...currentProgress, directions: updatedDirections })
-        }
-      }
-      break
-    
-    // 研究完成
-    case 'research_completed':
-      console.log('[ChatView] Research completed')
-      stopTeamPolling()
-      if (event.content) {
-        updateLastMessage(event.content as string)
-      }
-      // 更新消息附件，添加下载按钮
-      if (event.task_id) {
-        updateLastMessageAttachments({
-          researchCompleted: {
-            task_id: event.task_id as string,
-            report_url: event.report_url as string | undefined,
-            source_count: (event.source_count as number) || 0,
-            duration_seconds: (event.duration_seconds as number) || 0,
-          }
-        })
-      }
-      clearResearch()
-      break
-    
-    // 研究错误
-    case 'research_error':
-      console.error('[ChatView] Research error event:', event)
-      const errorMsg = (event.error_message as string) || '研究过程中发生错误'
-      if (accumulatedContent) {
-        updateLastMessage(accumulatedContent + '\n\n' + errorMsg)
-      } else {
-        updateLastMessage(errorMsg)
-      }
-      clearResearch()
-      break
-    
-    // 内容输出
-    case 'content':
-      if (typeof event.accumulated === 'string') {
-        accumulatedContent = event.accumulated
-        updateLastMessage(accumulatedContent)
-      } else if (typeof event.content === 'string') {
-        accumulatedContent += event.content
-        updateLastMessage(accumulatedContent)
-      }
-      break
-    
-    // 完成
-    case 'done':
-      if (typeof event.content === 'string' && event.content) {
-        updateLastMessage(event.content)
-      } else if (accumulatedContent) {
-        updateLastMessage(accumulatedContent)
-      }
-      break
-    
-    // 默认处理
-    default:
-      console.log('[ChatView] Unknown research event:', event.type)
-  }
-}
+// handleResearchEvent moved to useResearch composable
 
 // 取消研究
 async function handleResearchCancel(taskId: string) {
-  console.log('[ChatView] Cancelling research:', taskId)
-  try {
-    await researchApi.cancel(taskId)
-    clearResearch()
-    updateLastMessage('研究已取消')
-  } catch (error) {
-    console.error('[ChatView] Cancel research error:', error)
-  }
-  setStreaming(false)
-  setAbortController(null)
+  await cancelResearch(taskId)
 }
 
 // 确认研究计划
 async function handleResearchConfirmPlan(taskId: string) {
-  console.log('[ChatView] Confirming research plan:', taskId)
-  
-  // 清除计划卡片
-  setResearchPlan(undefined)
-  setStreaming(true)
-  
-  const controller = createAbortController()
-  setAbortController(controller)
-  
-  try {
-    // ========== 两阶段模式：先建立 SSE 连接，再确认计划 ==========
-    // 阶段1：建立 SSE 连接
-    console.log('[ChatView] Phase 1: Establishing SSE connection...')
-    const eventResponse = await researchApi.events(taskId, controller.signal)
-    console.log('[ChatView] SSE connection established')
-    
-    // 阶段2：确认计划（会启动异步任务）
-    console.log('[ChatView] Phase 2: Confirming plan...')
-    const response = await researchApi.confirmPlan(taskId)
-    console.log('[ChatView] Plan confirmed:', response)
-    
-    updateLastMessage('研究计划已确认，开始执行研究...')
-    
-    // 处理研究事件
-    for await (const event of streamEvents(eventResponse)) {
-      if (!getAbortController()) break
-      handleResearchEvent(event)
-    }
-  } catch (error) {
-    console.error('[ChatView] Confirm plan error:', error)
-    if (error instanceof Error) {
-      updateLastMessage('确认计划失败: ' + error.message)
-    }
-  } finally {
-    setStreaming(false)
-    setAbortController(null)
-    reset()
-  }
+  await confirmPlan(taskId)
 }
 
 // 修改研究计划
 async function handleResearchModifyPlan(taskId: string, directions: DirectionSpec[]) {
-  console.log('[ChatView] Modifying research plan:', taskId, directions)
-  
-  try {
-    await researchApi.updatePlan(taskId, directions)
-    // 修改成功后直接确认
-    await handleResearchConfirmPlan(taskId)
-  } catch (error) {
-    console.error('[ChatView] Modify plan error:', error)
-    if (error instanceof Error) {
-      updateLastMessage('修改计划失败: ' + error.message)
-    }
-  }
+  await modifyPlan(taskId, directions)
 }
 
 // 回答澄清问题
 async function handleResearchClarify(taskId: string, answers: Record<number, string>) {
-  console.log('[ChatView] Submitting clarification answers:', taskId, answers)
-
-  // 清除澄清问题卡片
-  clearClarification()
-  setStreaming(true)
-
-  const controller = createAbortController()
-  setAbortController(controller)
-
-  try {
-    // 将答案组合成文本
-    const answerText = Object.entries(answers)
-      .map(([idx, ans]) => `Q${parseInt(idx) + 1}: ${ans}`)
-      .join('\n')
-
-    // 第一步：POST /resume 获取响应（JSON）
-    console.log('[ChatView] Step 1: Calling /resume endpoint...')
-    const resumeResponse = await researchApi.resume(taskId, answerText, controller.signal)
-
-    if (!resumeResponse.ok) {
-      console.error('[ChatView] Resume failed:', resumeResponse.status)
-      updateLastMessage(`恢复研究失败: ${resumeResponse.status} ${resumeResponse.statusText}`)
-      return
-    }
-
-    // 解析 JSON 响应
-    const resumeData = await resumeResponse.json() as { task_id?: string; status?: string; error?: string }
-    console.log('[ChatView] /resume response:', resumeData)
-
-    if (!resumeData.task_id) {
-      console.error('[ChatView] No task_id in /resume response:', resumeData)
-      updateLastMessage('恢复研究失败: 未获取到任务ID')
-      return
-    }
-
-    // 清空之前的内容
-    accumulatedContent = ''
-    updateLastMessage('研究已恢复，正在连接事件流...')
-
-    // 第二步：GET /events 建立 SSE 连接
-    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
-    const eventsResponse = await researchApi.events(taskId, controller.signal)
-
-    if (!eventsResponse.ok) {
-      console.error('[ChatView] Events connection failed:', eventsResponse.status)
-      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
-      return
-    }
-
-    for await (const event of streamEvents(eventsResponse)) {
-      if (!getAbortController()) break
-      handleResearchEvent(event)
-    }
-  } catch (error) {
-    console.error('[ChatView] Clarify error:', error)
-    if (error instanceof Error) {
-      updateLastMessage('提交答案失败: ' + error.message)
-    }
-  } finally {
-    setStreaming(false)
-    setAbortController(null)
-    reset()
-  }
+  await clarify(taskId, answers)
 }
 
 // 跳过澄清问题
 async function handleResearchClarifySkip(taskId: string) {
-  console.log('[ChatView] Skipping clarification:', taskId)
-
-  // 清除澄清问题卡片
-  clearClarification()
-  setStreaming(true)
-
-  const controller = createAbortController()
-  setAbortController(controller)
-
-  try {
-    // 第一步：POST /resume 获取响应（JSON）
-    console.log('[ChatView] Step 1: Calling /resume endpoint (skip)...')
-    const resumeResponse = await researchApi.resume(taskId, '使用默认设置继续', controller.signal)
-
-    if (!resumeResponse.ok) {
-      console.error('[ChatView] Resume (skip) failed:', resumeResponse.status)
-      updateLastMessage(`继续研究失败: ${resumeResponse.status} ${resumeResponse.statusText}`)
-      return
-    }
-
-    // 解析 JSON 响应
-    const resumeData = await resumeResponse.json() as { task_id?: string; status?: string; error?: string }
-    console.log('[ChatView] /resume (skip) response:', resumeData)
-
-    accumulatedContent = ''
-    updateLastMessage('研究已恢复，正在连接事件流...')
-
-    // 第二步：GET /events 建立 SSE 连接
-    console.log('[ChatView] Step 2: Connecting to /events endpoint...')
-    const eventsResponse = await researchApi.events(taskId, controller.signal)
-
-    if (!eventsResponse.ok) {
-      console.error('[ChatView] Events connection failed:', eventsResponse.status)
-      updateLastMessage(`事件流连接失败: ${eventsResponse.status} ${eventsResponse.statusText}`)
-      return
-    }
-
-    for await (const event of streamEvents(eventsResponse)) {
-      if (!getAbortController()) break
-      handleResearchEvent(event)
-    }
-  } catch (error) {
-    console.error('[ChatView] Skip clarification error:', error)
-    if (error instanceof Error) {
-      updateLastMessage('继续研究失败: ' + error.message)
-    }
-  } finally {
-    setStreaming(false)
-    setAbortController(null)
-    reset()
-  }
+  await clarifySkip(taskId)
 }
 
-// 下载研究报告
-async function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
-  console.log('[ChatView] Downloading research report:', taskId, format)
-  try {
-    const response = await researchApi.downloadReport(taskId, format)
-    if (!response.ok) {
-      console.error('[ChatView] Download failed:', response.status)
-      return
-    }
-    // 获取文件名
-    const contentDisposition = response.headers.get('Content-Disposition')
-    let filename = `research-report-${taskId}.${format === 'pdf' ? 'pdf' : 'md'}`
-    if (contentDisposition) {
-      const match = contentDisposition.match(/filename="?([^"]+)"?/)
-      if (match) {
-        filename = match[1]
-      }
-    }
-    // 下载文件
-    const blob = await response.blob()
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-    console.log('[ChatView] Report downloaded:', filename)
-  } catch (error) {
-    console.error('[ChatView] Download error:', error)
-  }
+// 下载研究报告（PDF 下载已移除，使用 Markdown 复制）
+async function handleResearchDownload(_taskId: string, _format: 'markdown' | 'pdf') {
+  console.log('[ChatView] PDF download removed, use Markdown copy instead')
 }
 
 // 清理

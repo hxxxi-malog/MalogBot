@@ -149,6 +149,20 @@ export interface ResearchProgress {
   elapsed_seconds: number
   directions: ResearchDirectionProgress[]
   current_action: string
+  estimated_remaining?: string
+}
+
+// 研究进度日志条目（瀑布流显示）
+export interface ResearchProgressLogEntry {
+  id: string
+  timestamp: Date
+  direction_id: string
+  direction_name: string
+  phase: 'started' | 'exploring' | 'analyzing' | 'synthesizing' | 'completed' | 'failed'
+  message: string
+  progress: number
+  learnings_count?: number
+  sources_count?: number
 }
 
 // SSE 事件数据类型
@@ -191,9 +205,10 @@ export interface ResearchCompletedEvent {
 // 研究完成附件数据（前端显示用）
 export interface ResearchCompletedData {
   task_id: string
-  report_url?: string
   source_count: number
   duration_seconds: number
+  report_id?: string
+  word_count?: number
 }
 
 export interface ResearchErrorEvent {
@@ -217,6 +232,8 @@ export interface MessageAttachments {
   integratingContent?: string
   // 深度研究进度
   researchProgress?: ResearchProgress
+  // 研究进度日志（瀑布流）
+  researchProgressLogs?: ResearchProgressLogEntry[]
   // 研究计划确认
   researchPlan?: ResearchPlanConfirmEvent
   // 澄清问题（包含 task_id）
@@ -293,6 +310,7 @@ export interface StreamEvent {
   need_retry?: boolean
   command_type?: string
   operation?: string
+  seq_no?: string
   [key: string]: unknown
 }
 

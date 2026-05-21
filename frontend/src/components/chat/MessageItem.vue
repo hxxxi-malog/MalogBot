@@ -85,6 +85,11 @@ const researchProgress = computed(() => {
   return props.message.attachments?.researchProgress
 })
 
+// 研究进度日志
+const researchProgressLogs = computed(() => {
+  return props.message.attachments?.researchProgressLogs
+})
+
 // 是否有研究计划确认
 const hasResearchPlan = computed(() => {
   return props.message.attachments?.researchPlan
@@ -211,13 +216,14 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
         class="attachment-card"
       />
 
-      <!-- 研究进度卡片 -->
-      <ResearchProgressCard
-        v-if="hasResearchProgress && researchProgress"
-        :progress="researchProgress"
-        class="attachment-card"
-        @cancel="handleResearchCancel"
-      />
+<!-- 研究进度卡片 -->
+<ResearchProgressCard
+  v-if="hasResearchProgress && researchProgress"
+  :progress="researchProgress"
+  :progress-logs="researchProgressLogs"
+  class="attachment-card"
+  @cancel="handleResearchCancel"
+/>
 
       <!-- 研究计划确认卡片 -->
       <PlanConfirmCard
@@ -242,6 +248,7 @@ function handleResearchDownload(taskId: string, format: 'markdown' | 'pdf') {
       <ResearchCompletedCard
         v-if="hasResearchCompleted && researchCompleted"
         :data="researchCompleted"
+        :markdown-content="message.content"
         class="attachment-card"
         @download="handleResearchDownload"
       />
