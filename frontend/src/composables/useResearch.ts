@@ -15,7 +15,6 @@ import {
   store,
   setResearchTaskId,
   setResearching,
-  setResearchConfirmTime,
   setStreaming,
   setAbortController,
   updateLastMessage,
@@ -359,9 +358,8 @@ export function useResearch() {
         setResearchPlan({ ...currentPlan, can_modify: false })
       }
 
-      // 记录确认时间，用于从确认后开始计时
-      setResearchConfirmTime(Date.now())
-
+      // 确认时间由后端推送首个带 directions 的 progress 事件时隐式生效
+      // 此处不设置，避免倒计时在研究方向到达前就开始
       setStreaming(true)
       updateLastMessage('研究计划已确认，正在启动研究...')
       updateResearchProgress({

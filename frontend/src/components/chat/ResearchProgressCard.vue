@@ -16,7 +16,6 @@ import {
   Timer
 } from 'lucide-vue-next'
 import type { ResearchProgress, ResearchDirectionProgress, ResearchProgressLogEntry } from '@/types'
-import { researchConfirmTime } from '@/stores'
 
 const props = defineProps<{
   progress: ResearchProgress
@@ -28,7 +27,7 @@ const emit = defineEmits<{
 }>()
 
 // 本地计时器：基于后端推送的 elapsed_seconds 作为基准，本地持续递增
-// 深度研究模式下，计时从确认计划后开始（使用 researchConfirmTime）
+// 深度研究模式下，计时从研究方向到达后开始（后端已开始执行）
 // 标准研究模式下，计时从任务创建后开始
 const localElapsedSeconds = ref(0)
 let timerInterval: ReturnType<typeof setInterval> | null = null
@@ -38,8 +37,8 @@ const isTimerRunning = ref(false)
 function shouldTimerRun(): boolean {
   // 标准研究模式：一开始就计时
   if (props.progress.mode === 'standard') return true
-  // 深度研究模式：确认计划后才计时
-  return !!researchConfirmTime.value
+  // 深度研究模式：研究方向到达后才计时（后端已开始执行，elapsed_seconds 由后端计算）
+  return props.progress.directions.length > 0
 }
 
 // 启动计时器
@@ -47,13 +46,9 @@ function startTimer() {
   if (isTimerRunning.value) return
   isTimerRunning.value = true
 
-  // 计算初始已用时间
-  if (researchConfirmTime.value && props.progress.mode === 'deep') {
-    // 深度研究：从确认时间开始计算
-    localElapsedSeconds.value = Math.floor((Date.now() - researchConfirmTime.value) / 1000)
-  } else {
-    localElapsedSeconds.value = props.progress.elapsed_seconds || 0
-  }
+  // 使用后端推送的 elapsed_seconds 作为初始值
+  // 深度研究模式下，计时从研究方向到达时才开始，后端已在计时
+  localElapsedSeconds.value = props.progress.elapsed_seconds || 0
 
   timerInterval = setInterval(() => {
     localElapsedSeconds.value++
@@ -69,10 +64,10 @@ function stopTimer() {
   isTimerRunning.value = false
 }
 
-// 监听后端推送的 elapsed_seconds 更新本地基准（仅标准研究模式使用）
+// 监听后端推送的 elapsed_seconds 更新本地基准
+// 后端每 5 秒推送一次，用于校正本地计时漂移
 watch(() => props.progress.elapsed_seconds, (newVal) => {
-  // 标准研究模式下，同步后端时间
-  if (props.progress.mode === 'standard' && newVal > localElapsedSeconds.value) {
+  if (newVal && newVal > localElapsedSeconds.value) {
     localElapsedSeconds.value = newVal
   }
 })
@@ -309,7 +304,7 @@ function formatTimestamp(date: Date): string {
         </div>
       </div>
       <div class="header-right">
-        <div class="time-display">
+        <div class="time-display" v-if="isTimerRunning">
           <Clock class="w-4 h-4" />
           <span>{{ formattedTime }}</span>
         </div>
