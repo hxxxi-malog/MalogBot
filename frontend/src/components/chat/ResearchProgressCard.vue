@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { 
   Search, 
   Brain, 
@@ -72,18 +72,12 @@ watch(() => props.progress.elapsed_seconds, (newVal) => {
   }
 })
 
-// 监听是否应启动计时器
+// 监听是否应启动计时器（immediate: true 在 setup 阶段即执行首次检查）
 watch(() => shouldTimerRun(), (shouldRun) => {
   if (shouldRun) {
     startTimer()
   }
 }, { immediate: true })
-
-onMounted(() => {
-  if (shouldTimerRun()) {
-    startTimer()
-  }
-})
 
 onUnmounted(() => {
   stopTimer()
